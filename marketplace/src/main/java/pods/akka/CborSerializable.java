@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2009-2019 Lightbend Inc. <https://www.lightbend.com>
  */
-package sample.cluster;
+package pods.akka;
 
 /**
  * Marker trait to tell Akka to serialize messages into CBOR using Jackson for sending over the network

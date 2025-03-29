@@ -6,12 +6,15 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 
 // Product Actor
 // should be shared Entity with type
 public class Product extends AbstractBehavior<Product.Command> {
-    public interface Command {}
-
+    // Cbor necessary fr persistence
+    public interface Command extends CborSerializable{}
+     public static final EntityTypeKey<Command> TypeKey =
+			    EntityTypeKey.create(Product.Command.class, "ProductEntity");
     public static class Buy implements Command {
         // i think here all relevant fields should be included, like name, price, etc.as per request
         public final int quantity;
@@ -21,6 +24,9 @@ public class Product extends AbstractBehavior<Product.Command> {
             this.quantity = quantity;
             // this.replyTo = replyTo;
         }
+    }
+    public static final record GetProduct(String productId, ActorRef<Gateway.Response> replyTo) implements Command{
+
     }
 
     // public static class SubtractFromBalance implements Command {
@@ -38,7 +44,15 @@ public class Product extends AbstractBehavior<Product.Command> {
 
     private Product(ActorContext<Command> context, int initialBalance) {
         super(context);
+        System.out.println("Inside newly created" + initialBalance);
         this.quantity = initialBalance;
+    }
+
+    private Product(String entityId, ActorContext<Command> context) {
+        super(context);
+        // Initialize fields as needed, e.g., quantity or other attributes
+        this.quantity = 0; // Default value or logic based on entityId
+        getContext().getLog().info("Product Actor created with entityId: {}", entityId);
     }
 
     // public static Behavior<Command> create(int initialBalance) {
@@ -48,23 +62,25 @@ public class Product extends AbstractBehavior<Product.Command> {
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
-                .onMessage(Buy.class, this::onBuy)
+                .onMessage(GetProduct.class, this::onGetProduct)
                 .build();
     }
 
-    private Behavior<Command> onBuy(Buy req) {
-        this.quantity -= req.quantity;
-        // msg.replyTo.tell(new Order.AddOK());
+    private Behavior<Command> onGetProduct(GetProduct req) {
+        
+        req.replyTo.tell(new Gateway.Response("ola"));
         return this;
     }
-
-//     private Behavior<Command> onSubtractFromBalance(SubtractFromBalance msg) {
-//         if (msg.amount <= balance) {
-//             this.balance -= msg.amount;
-//             msg.replyTo.tell(new Order.SubtractOK());
-//         } else {
-//             msg.replyTo.tell(new Order.SubtractFailed());
-//         }
-//         return this;
-//     }
+    public static Behavior<Command> create(String entityId) {
+        return Behaviors.setup(context -> new Product(entityId, context));
+    }
+    // private Behavior<Command> onSubtractFromBalance(SubtractFromBalance msg) {
+    //     if (msg.amount <= balance) {
+    //         this.balance -= msg.amount;
+    //         msg.replyTo.tell(new Order.SubtractOK());
+    //     } else {
+    //         msg.replyTo.tell(new Order.SubtractFailed());
+    //     }
+    //     return this;
+    // }
 }

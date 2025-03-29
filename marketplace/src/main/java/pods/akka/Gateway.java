@@ -1,11 +1,17 @@
 package pods.akka;
 
+
+
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.Entity;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
+import akka.cluster.sharding.typed.javadsl.EntityContext;
 
 public class Gateway extends AbstractBehavior<Gateway.Command> {
 	/* This class is also a skeleton class. 
@@ -13,16 +19,23 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 	 */
 	int responseNum = 0;
 	
+    private final ClusterSharding sharding;
     
+    // Create a few Product entities for demonstration purposes
 
 
-	static class Command {
-		ActorRef<Response> replyTo;
-		public Command(ActorRef<Response> r) {replyTo = r;}
-	}
-    // public interface Command {}
+
+	// static class Command {
+	// 	ActorRef<Response> replyTo;
+	// 	public Command(ActorRef<Response> r) {replyTo = r;}
+	// }
+    public interface Command extends CborSerializable{}
+
+    public static final record GetProductById(String productId, ActorRef<Response> replyTo) implements Command{
+
+    }
 	
-	class Response {
+	public static class Response {
 		String resp;
 		public Response(String s) {resp = s;}
 	}
@@ -33,16 +46,35 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 
     private Gateway(ActorContext<Command> context) {
         super(context);
+        
+            // Assuming Product.Command and Product.TypeKey are defined elsewhere
+            ClusterSharding sharding = ClusterSharding.get(context.getSystem());
+            sharding.init(
+                Entity.of(Product.TypeKey,
+                (EntityContext<Product.Command> entityContext) ->
+                        Product.create(entityContext.getEntityId())
+            ));
+
+            // Create Product entities with IDs 101 and 102
+            EntityRef<Product.Command> product101 = sharding.entityRefFor(Product.TypeKey, "101");
+            EntityRef<Product.Command> product102 = sharding.entityRefFor(Product.TypeKey, "102");
+
+   
+        
+        this.sharding = ClusterSharding.get(context.getSystem());
     }
     
     @Override
     public Receive<Command> createReceive() {
-        return newReceiveBuilder().onMessage(Command.class, this::onCommand).build();
+        return newReceiveBuilder().onMessage(GetProductById.class, this::onGetProductById).build();
     }
     
-    private Behavior<Command> onCommand(Command command) {
-        command.replyTo.tell(new Response("Response " + responseNum++ + " from Gateway actor. "));
-        // Stub functionality. This is not the actual desired functionality.
+    private Behavior<Command> onGetProductById(GetProductById req) {
+
+        EntityRef<Product.Command> productEntity =
+            sharding.entityRefFor(Product.TypeKey, req.productId);
+        
+        productEntity.tell(new Product.GetProduct(req.productId, req.replyTo));
         return this;
       }
 
