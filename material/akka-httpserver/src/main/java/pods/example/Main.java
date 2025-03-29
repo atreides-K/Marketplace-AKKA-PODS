@@ -35,7 +35,11 @@ public class Main {
         				  askTimeout,
         				  scheduler);
         	// The first param to ask() is the target actor to which we want to send the message
-        	/* The second param to ask() is a function that takes a "reply to" ActorRef as parameter (the parameter is named "ref" in this case), and constructs and returns the message to be sent to the target actor. The Akka framework will first implicitly create a "reply to" actor  for use only in this call to ask(); the programmer need not even declare a class for this actor. The framework will then call the provided function (i.e., the second param), and give the replyt-to ActorRef as argument to this function. Normally, the function should embed the reply-to ActorRef in the message, and should also populate the message's other fields with whatever they need to contain. Once the function returns the constructed message, the framework  sends this message to the target actor. When the target actor eventually sends a response  to the ActorRef inside the message (i.e., the reply-to actor),  that response will be received by the reply-to actor.   
+        	/* The second param to ask() is a function that takes a "reply to" ActorRef as parameter (the parameter is named "ref" in this case), and constructs and returns the message to be sent to the target actor. The Akka framework will first implicitly create a "reply to" actor  for use only in this call to ask(); the programmer need not even declare a class for this actor. The framework will then call the provided function (i.e., the second param), and give the replyt-to ActorRef as argument to this function. 
+			
+			Normally, the function should embed the reply-to ActorRef in the message, and should also populate the message's other fields with whatever they need to contain. 
+			
+			Once the function returns the constructed message, the framework  sends this message to the target actor. When the target actor eventually sends a response  to the ActorRef inside the message (i.e., the reply-to actor),  that response will be received by the reply-to actor.   
 			  We should also explain what is meant by a CompletionStage<T> object. CompletionStage is a feature of plain Java, not akka. Please note that ask() is actually not a blocking call. It is non-blocking, like tell(). The difference is that tell() returns nothing, and does not expect that the target actor necessarily responds to the sending actor. Whereas, ask() expects that the target actor will respond to the reply-to actor embedded in the message sent to it. And the response message sent by the target actor (whenever it sends the message) will be received by the reply-to actor and  then placed into the CompletionStage returned by ask(). A CompletionStage in general is a placeholder for a value that is being computed by an asynchronous task, and that may not yet be ready to read. 
 			  */
         	 // The third param to ask() is how long the CompletionStage should wait for its value to be obtained before declaring a timeout
@@ -65,7 +69,7 @@ public class Main {
         	 
         	 askTimeout = Duration.ofSeconds(5);
         	 scheduler = context.getSystem().scheduler();
-            
+			// code which starts the http server inside the root actor?
         	 HttpServer server = HttpServer.create(new InetSocketAddress(8000), 0); /* Creates a HTTP server that runs on localhost and listens to port 8000 */
              server.createContext("/", new MyHandler()); /* The "handle" method class MyHandler will receive each http request and respond to it */
              server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool()); /* Create a thread pool and give it to the server. Server will submit each incoming request to the thread pool. Thread pool will pick a free thread (whenever it becomes available) and run the handle() method in this thread. The request is given as argument to the handle() method. */
@@ -78,5 +82,7 @@ public class Main {
     public static void main(String[] args) {
         ActorSystem.create(Main.create(), "AccountSystem"); // spawn the root actor
         // A question to think about: Why can't we start the http server here? Why does it need to be started within the root actor?
+
+		// actor system stops or crashes, the HTTP server would still be running, potentially leading to inconsistencies
     }
 }
