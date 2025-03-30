@@ -35,16 +35,38 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 	// static class Command {
 	// 	ActorRef<Response> replyTo;
 	// 	public Command(ActorRef<Response> r) {replyTo = r;}
-	// }
-    public interface Command extends CborSerializable{}
+    // }
+    public interface Command extends CborSerializable {}
 
-    public static final record GetProductById(String productId, ActorRef<ProductActor.ProductResponse> replyTo) implements Command{}
+    public static final class GetProductById implements Command {
+        public final String product_id;
+        public final ActorRef<ProductActor.ProductResponse> replyTo;
 
- 
-    public static final record OrderItem(String productId, int quantity) {}
-    public static final record PostOrderReq(int userId,List<OrderActor.OrderItem> items,ActorRef<PostOrder.PostOrderResponse> replyTo) implements Command{}
+        public GetProductById(String product_id, ActorRef<ProductActor.ProductResponse> replyTo) {
+            this.product_id = product_id;
+            this.replyTo = replyTo;
+        }
+    }
 
-	public static class Response {
+
+
+    public static final class PostOrderReq implements Command {
+        public final int user_id;
+        public final List<OrderActor.OrderItem> items;
+        public final ActorRef<PostOrder.PostOrderResponse> replyTo;
+        public PostOrderReq() {
+            this.user_id = 0;
+            this.items = null;
+            this.replyTo = null;
+        }
+        public PostOrderReq(int user_id, List<OrderActor.OrderItem> items, ActorRef<PostOrder.PostOrderResponse> replyTo) {
+            this.user_id = user_id;
+            this.items = items;
+            this.replyTo = replyTo;
+        }
+    }
+
+    public static class Response {
 		String resp;
 		public Response(String s) {resp = s;}
 	}
@@ -71,19 +93,19 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 
             // Log all products in the loaded list
             for (String[] productDetails : loadProductDetails) {
-                String productId = productDetails[0];
+                String product_id = productDetails[0];
                 String productName = productDetails[1];
                 String productDescription = productDetails[2];
                 double productPrice = Double.parseDouble(productDetails[3]);
                 int productQuantity = Integer.parseInt(productDetails[4]);
 
                 getContext().getLog().info("Loaded Product - ID: {}, Name: {}, Description: {},Price: {}, Quantity: {}", 
-                                           productId, productName,
+                                           product_id, productName,
                                            productDescription, productPrice, productQuantity);
 
                 // Create ProductActor entities for each product
-                 sharding.entityRefFor(ProductActor.TypeKey, productId)
-                         .tell(new ProductActor.InitializeProduct(productId, productName, productDescription, (int) productPrice, productQuantity));
+                 sharding.entityRefFor(ProductActor.TypeKey, product_id)
+                         .tell(new ProductActor.InitializeProduct(product_id, productName, productDescription, (int) productPrice, productQuantity));
             }
             // Create ProductActor entities with IDs 101 and 102
             // EntityRef<ProductActor.Command> product101 = sharding.entityRefFor(ProductActor.TypeKey, "101");
@@ -105,7 +127,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
     private Behavior<Command> onGetProductById(GetProductById req) {
 
         EntityRef<ProductActor.Command> productEntity =
-            sharding.entityRefFor(ProductActor.TypeKey, req.productId);
+            sharding.entityRefFor(ProductActor.TypeKey, req.product_id);
         
         productEntity.tell(new ProductActor.GetProduct(req.replyTo));
         return this;
@@ -115,7 +137,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         ActorRef<PostOrder.Command> postOrderWorker = 
             getContext().spawn(PostOrder.create(), "PostOrderWorker-" + responseNum++);
         
-        postOrderWorker.tell(new PostOrder.StartOrder(req.userId,req.items,req.replyTo));
+        postOrderWorker.tell(new PostOrder.StartOrder(req.user_id,req.items,req.replyTo));
         // productEntity.tell(new ProductActor.GetProduct(req.replyTo));
         return this;
       }

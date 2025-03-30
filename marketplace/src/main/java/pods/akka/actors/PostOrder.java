@@ -63,10 +63,10 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
     // Message carrying the response from product deduction.
     private static final class DeductionResponse implements Command {
-        public final int productId;
+        public final int product_id;
         public final ProductActor.OperationResponse response;
-        public DeductionResponse(int productId, ProductActor.OperationResponse response) {
-            this.productId = productId;
+        public DeductionResponse(int product_id, ProductActor.OperationResponse response) {
+            this.product_id = product_id;
             this.response = response;
         }
     }
@@ -213,7 +213,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         // Step 2: For each product in the order, send a deduction message.
         pendingDeductionResponses = items.size();
         for (OrderActor.OrderItem item : items) {
-            int prodId = item.productId;
+            int prodId = item.product_id;
             int qty = item.quantity;
             // Get the ProductActor reference from a registry.
             ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(prodId);
@@ -236,7 +236,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         pendingDeductionResponses--;
         if (!msg.response.success) {
             deductionFailed = true;
-            getContext().getLog().error("Deduction failed for product {}: {}", msg.productId, msg.response.message);
+            getContext().getLog().error("Deduction failed for product {}: {}", msg.product_id, msg.response.message);
         } else {
             totalPriceFromProducts += msg.response.priceDeducted;
         }
@@ -244,7 +244,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             if (deductionFailed) {
                 // Rollback: Restock products for each order item.
                 for (OrderActor.OrderItem item : items) {
-                    ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.productId);
+                    ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.product_id);
                     productActor.tell(new ProductActor.AddStock(item.quantity));
                 }
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Product stock deduction failed"));
@@ -279,7 +279,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             getContext().getLog().error("Wallet check failed: {}", msg.message);
             // Rollback product stock.
             for (OrderActor.OrderItem item : items) {
-                ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.productId);
+                ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.product_id);
                 productActor.tell(new ProductActor.AddStock(item.quantity));
             }
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Wallet check failed"));
@@ -288,7 +288,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 getContext().getLog().error("Insufficient wallet balance: {} available, {} required", msg.balance, totalPriceFromProducts);
                 // Rollback product stock.
                 for (OrderActor.OrderItem item : items) {
-                    ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.productId);
+                    ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.product_id);
                     productActor.tell(new ProductActor.AddStock(item.quantity));
                 }
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Insufficient wallet balance"));
@@ -320,7 +320,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             getContext().getLog().error("Wallet debit failed: {}", msg.message);
             // Rollback product stock.
             for (OrderActor.OrderItem item : items) {
-                ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.productId);
+                ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.product_id);
                 productActor.tell(new ProductActor.AddStock(item.quantity));
             }
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Wallet debit failed"));

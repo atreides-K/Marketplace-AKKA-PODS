@@ -83,10 +83,14 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
 
     // A simple representation of an order item.
     public static final class OrderItem implements CborSerializable {
-        public final int productId;
+        public final int product_id;
         public final int quantity;
+        public OrderItem() {
+            this.product_id = 0;
+            this.quantity = 0;
+        }
         public OrderItem(int productId, int quantity) {
-            this.productId = productId;
+            this.product_id = productId;
             this.quantity = quantity;
         }
     }

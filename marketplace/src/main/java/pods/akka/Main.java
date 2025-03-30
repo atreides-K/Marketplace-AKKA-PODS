@@ -35,6 +35,7 @@ public class Main {
         @Override
         public void handle(HttpExchange req) throws IOException {
             // only has GET request
+            System.out.println("Received request: " + req.getRequestMethod());
             if("GET".equals(req.getRequestMethod())){
                 	// parse the request path and body
                 	// create a Product.Command object
@@ -112,29 +113,40 @@ public class Main {
             } else if ("POST".equals(req.getRequestMethod())) {
                 // Handle POST requests
                 // You can implement similar logic for handling POST requests here
+                System.out.println("Handling POST request");
                 String[] pathParts = req.getRequestURI().getPath().split("/");
-                if (pathParts.length > 1) {
+                if (pathParts.length == 2) {
+
                     String secondWord = pathParts[1];
+                    System.out.println("Second word: " + secondWord);
                     if ("orders".equals(secondWord)) {
                         // Handle order-related POST requests
-                        String productId;
-                           
+                        // This is already implemented below
+                        System.out.println("inside orderPost" );
                                 ObjectMapper objectMapper = new ObjectMapper();
                                 Gateway.PostOrderReq orderRequest;
                                 try {
                                     // Parse the request body into OrderRequest
+
                                     orderRequest = objectMapper.readValue(req.getRequestBody(), Gateway.PostOrderReq.class);
                                 } catch (IOException e) {
+                                    System.err.println("Error parsing request body: " + e.getMessage());
                                     req.sendResponseHeaders(400, 0); // Bad Request
                                     req.getResponseBody().close();
                                     return;
                                 }
-
+                                System.out.println("Order Request: " + orderRequest);
+                                System.out.println("Order Request: " + orderRequest.user_id);
+                                orderRequest.items.forEach(item -> {
+                                    System.out.println("Product ID: " + item.product_id);
+                                    System.out.println("Quantity: " + item.quantity);
+                                });
+                                System.out.println("Order Request: " + orderRequest.user_id);
                                 // Send the parsed OrderRequest to the gateway actor                   
                                 CompletionStage<PostOrder.PostOrderResponse> compl = 
                                         AskPattern.ask(
                                             gateway,
-                                            (ActorRef<PostOrder.PostOrderResponse> ref) -> new Gateway.PostOrderReq(orderRequest.userId(),orderRequest.items(), ref), 
+                                            (ActorRef<PostOrder.PostOrderResponse> ref) -> new Gateway.PostOrderReq(orderRequest.user_id,orderRequest.items, ref), 
                                             askTimeout,
                                             scheduler);
 

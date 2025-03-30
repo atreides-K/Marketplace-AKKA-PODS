@@ -192,7 +192,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         // Step 6: Restock each product in the order.
         for (OrderActor.OrderItem item : details.items) {
             EntityRef<ProductActor.Command> productEntity =
-                    sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.productId));
+                    sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
             productEntity.tell(new ProductActor.AddStock(item.quantity));
         }
         getContext().getLog().info("Restocked products for order {}", orderId);
