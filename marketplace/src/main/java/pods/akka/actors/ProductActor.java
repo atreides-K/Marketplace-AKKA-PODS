@@ -4,11 +4,15 @@ import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
+import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
+import pods.akka.CborSerializable;
 
 public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     // Define message protocol for ProductActor
-    public interface Command {}
+    public interface Command extends CborSerializable{}
+        public static final EntityTypeKey<Command> TypeKey =
+			    EntityTypeKey.create(ProductActor.Command.class, "ProductEntity");
 
     public static final class GetProduct implements Command {
         public final akka.actor.typed.ActorRef<ProductResponse> replyTo;
@@ -37,11 +41,11 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     // Reply messages
     public static final class ProductResponse {
-        public final int id;
+        public final String id;
         public final String description;
         public final int price;
         public final int availableStock;
-        public ProductResponse(int id, String description, int price, int availableStock) {
+        public ProductResponse(String id, String description, int price, int availableStock) {
             this.id = id;
             this.description = description;
             this.price = price;
@@ -61,18 +65,18 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     }
 
     // Product state
-    private final int productId;
+    private final String productId;
     private final String description;
     private final int price;
     private int stockQuantity;
 
     // Factory method to create a ProductActor
-    public static Behavior<Command> create(int productId, String description, int price, int initialStock) {
+    public static Behavior<Command> create(String productId, String description, int price, int initialStock) {
         return akka.actor.typed.javadsl.Behaviors.setup(context ->
                 new ProductActor(context, productId, description, price, initialStock));
     }
 
-    private ProductActor(ActorContext<Command> context, int productId, String description, int price, int initialStock) {
+    private ProductActor(ActorContext<Command> context, String productId, String description, int price, int initialStock) {
         super(context);
         this.productId = productId;
         this.description = description;

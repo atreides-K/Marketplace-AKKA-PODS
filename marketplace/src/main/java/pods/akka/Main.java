@@ -146,11 +146,16 @@ public class Main {
         // Get the port from the config
         int port = config.getInt("akka.remote.artery.canonical.port");
 
-      
-        config = ConfigFactory.parseString(
-        "akka.remote.artery.canonical.port=" + 8080 + "\n" +
-        "akka.cluster.seed-nodes=[\"akka://ClusterSystem@127.0.0.1:8080\"]"
-    ).withFallback(config);
+        System.out.println("Loaded Configurations:");
+        System.out.println("Port: " + port);
+
+        // config = ConfigFactory.parseString(
+        // "akka.remote.artery.canonical.port=" + port + "\n" +
+        // "akka.cluster.seed-nodes=[\"akka://ClusterSystem@127.0.0.1:8080\"]"
+        // ).withFallback(config);
+
+        // System.out.println("Updated Configurations:");
+        // System.out.println(config.root().render());
 
         // Create the ActorSystem
         

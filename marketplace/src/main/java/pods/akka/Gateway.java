@@ -2,6 +2,8 @@ package pods.akka;
 
 
 
+import java.util.List;
+
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.AbstractBehavior;
@@ -11,6 +13,7 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
+import pods.akka.actors.ProductActor;
 import akka.cluster.sharding.typed.javadsl.EntityContext;
 
 public class Gateway extends AbstractBehavior<Gateway.Command> {
@@ -21,9 +24,9 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 	
     private final ClusterSharding sharding;
     
-    // Create a few Product entities for demonstration purposes
+    // Create a few ProductActor entities for demonstration purposes
 
-
+    
 
 	// static class Command {
 	// 	ActorRef<Response> replyTo;
@@ -47,17 +50,38 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
     private Gateway(ActorContext<Command> context) {
         super(context);
         
-            // Assuming Product.Command and Product.TypeKey are defined elsewhere
+            // Assuming ProductActor.Command and ProductActor.TypeKey are defined elsewhere
             ClusterSharding sharding = ClusterSharding.get(context.getSystem());
             sharding.init(
-                Entity.of(Product.TypeKey,
-                (EntityContext<Product.Command> entityContext) ->
-                        Product.create(entityContext.getEntityId())
+                Entity.of(ProductActor.TypeKey,
+                (EntityContext<ProductActor.Command> entityContext) ->
+                        ProductActor.create(entityContext.getEntityId(),"unknown",0,0)
             ));
 
-            // Create Product entities with IDs 101 and 102
-            EntityRef<Product.Command> product101 = sharding.entityRefFor(Product.TypeKey, "101");
-            EntityRef<Product.Command> product102 = sharding.entityRefFor(Product.TypeKey, "102");
+
+            // load product details form CSV
+                        
+            List<String[]> loadProductDetails = LoadProduct.loadProducts("products.csv");
+
+            // Log all products in the loaded list
+            for (String[] productDetails : loadProductDetails) {
+                String productId = productDetails[0];
+                String productName = productDetails[1];
+                String productDescription = productDetails[2];
+                double productPrice = Double.parseDouble(productDetails[3]);
+                int productQuantity = Integer.parseInt(productDetails[4]);
+
+                getContext().getLog().info("Loaded Product - ID: {}, Name: {}, Description: {},Price: {}, Quantity: {}", 
+                                           productId, productName,
+                                           productDescription, productPrice, productQuantity);
+
+                // Create ProductActor entities for each product
+            //     sharding.entityRefFor(ProductActor.TypeKey, productId)
+            //             .tell(new ProductActor.InitializeProduct(productId, productName, productPrice, productQuantity));
+            }
+            // Create ProductActor entities with IDs 101 and 102
+            // EntityRef<ProductActor.Command> product101 = sharding.entityRefFor(ProductActor.TypeKey, "101");
+            // EntityRef<ProductActor.Command> product102 = sharding.entityRefFor(ProductActor.TypeKey, "102");
 
    
         
@@ -71,10 +95,10 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
     
     private Behavior<Command> onGetProductById(GetProductById req) {
 
-        EntityRef<Product.Command> productEntity =
-            sharding.entityRefFor(Product.TypeKey, req.productId);
+        EntityRef<ProductActor.Command> productEntity =
+            sharding.entityRefFor(ProductActor.TypeKey, req.productId);
         
-        productEntity.tell(new Product.GetProduct(req.productId, req.replyTo));
+        // productEntity.tell(new ProductActor.GetProduct(req.replyTo));
         return this;
       }
 
