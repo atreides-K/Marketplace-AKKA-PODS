@@ -52,6 +52,17 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         }
     }
 
+    // Internal message when the order is not found.
+    private static final class OrderNotFound implements Command {}
+
+    // Internal message when the order is found.
+    private static final class OrderFound implements Command {
+        public final OrderActor.OrderResponse orderDetails;
+        public OrderFound(OrderActor.OrderResponse orderDetails) {
+            this.orderDetails = orderDetails;
+        }
+    }
+
     // Message for wallet credit result.
     private static final class WalletCreditResult implements Command {
         public final boolean success;
@@ -109,6 +120,8 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(StartDelete.class, this::onStartDelete)
+                .onMessage(OrderNotFound.class, this::onOrderNotFound)
+                .onMessage(OrderFound.class, this::onOrderFound)
                 .onMessage(OrderStatusUpdated.class, this::onOrderStatusUpdated)
                 .onMessage(OrderDetailsReceived.class, this::onOrderDetailsReceived)
                 .onMessage(WalletCreditResult.class, this::onWalletCreditResult)
@@ -125,10 +138,28 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         // Look up the OrderActor by using its sharded entity ref.
         this.orderEntity = sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
         
-        //////////////////#####################//////////////////////
-        /// TODO: Check if the order exists. If not, return an error.
-        /// This can be done by sending a message to the OrderActor to check its existence.
-        // We assume the order exists if it was previously created.
+        // Send a GetOrder message to check if the order exists.
+        ActorRef<OrderActor.OrderResponse> adapter = getContext().messageAdapter(OrderActor.OrderResponse.class, orderResp -> {
+            if (orderResp.orderId == "0" || "NotInitialized".equals(orderResp.status)) {
+                return new OrderNotFound();
+            } else {
+                return new OrderFound(orderResp);
+            }
+        });
+        orderEntity.tell(new OrderActor.GetOrder(adapter));
+        return this;
+    }
+
+    // If no order is found, immediately reply with failure.
+    private Behavior<Command> onOrderNotFound(OrderNotFound msg) {
+        getContext().getLog().error("Order {} not found.", orderId);
+        pendingReplyTo.tell(new DeleteOrderResponse(false, "Order not found"));
+        return Behaviors.stopped();
+    }
+    
+    // If the order exists, proceed.
+    private Behavior<Command> onOrderFound(OrderFound msg) {
+        getContext().getLog().info("Order {} found. Proceeding to cancellation.", orderId);
         // Step 2: Update order status to "CANCELLED".
         ActorRef<OrderActor.OperationResponse> statusAdapter =
                 getContext().messageAdapter(OrderActor.OperationResponse.class,

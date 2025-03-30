@@ -8,6 +8,8 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -26,17 +28,23 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     // Initial command to start order processing.
     public static final class StartOrder implements Command {
         // public final int orderId;
-        public final String userId;
+        public final int userId;
         public final List<OrderActor.OrderItem> items;
         public final ActorRef<PostOrderResponse> replyTo;
-        public StartOrder(String userId, List<OrderActor.OrderItem> items, ActorRef<PostOrderResponse> replyTo) {
+        public StartOrder(int userId, List<OrderActor.OrderItem> items, ActorRef<PostOrderResponse> replyTo) {
             // this.orderId = orderId;
             this.userId = userId;
             this.items = items;
             this.replyTo = replyTo;
         }
     }
-
+        // Internal message to capture OrderActor initialization result.
+        private static final class OrderInitialized implements Command {
+        public final OrderActor.OperationResponse response;
+        public OrderInitialized(OrderActor.OperationResponse response) {
+            this.response = response;
+        }
+    }
     // Internal message for successful user validation.
     private static final class UserValidated implements Command {
         public final boolean discountAvailable;
@@ -95,6 +103,14 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
     }
 
+    // Internal message to signal that an OrderActor has been spawned and its details retrieved.
+    private static final class OrderCreated implements Command {
+        public final OrderActor.OrderResponse orderResponse;
+        public OrderCreated(OrderActor.OrderResponse orderResponse) {
+            this.orderResponse = orderResponse;
+        }
+    }
+
     // Final completion message.
     private static final class OrderProcessingComplete implements Command {
         public final boolean success;
@@ -105,16 +121,18 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
     }
 
-    // Response sent back to the Gateway.
-    public static final class PostOrderResponse {
+      // The response message sent back to the Gateway, now including complete order details.
+      public static final class PostOrderResponse {
         public final boolean success;
         public final String message;
-        public PostOrderResponse(boolean success, String message) {
+        public final OrderActor.OrderResponse orderResponse;
+
+        public PostOrderResponse(boolean success, String message, OrderActor.OrderResponse orderResponse) {
             this.success = success;
             this.message = message;
+            this.orderResponse = orderResponse;
         }
     }
-
     // State variables.
     private String orderId;
     private int userId;
@@ -126,6 +144,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     private boolean deductionFailed;
 
     private final HttpClient httpClient;
+    private final ClusterSharding sharding;
 
     // Factory method.
     public static Behavior<Command> create() {
@@ -135,6 +154,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     private PostOrder(ActorContext<Command> context) {
         super(context);
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        this.sharding = ClusterSharding.get(context.getSystem());
     }
 
     @Override
@@ -147,6 +167,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 .onMessage(WalletCheckResult.class, this::onWalletCheckResult)
                 .onMessage(WalletDebitResult.class, this::onWalletDebitResult)
                 .onMessage(DiscountUpdated.class, this::onDiscountUpdated)
+                .onMessage(OrderInitialized.class, this::onOrderInitialized)
+                .onMessage(OrderCreated.class, this::onOrderCreated)
                 .onMessage(OrderProcessingComplete.class, this::onOrderProcessingComplete)
                 .build();
     }
@@ -327,21 +349,53 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             getContext().getLog().error("Discount update failed: {}", msg.message);
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Discount update failed"));
         } else {
-            // All steps succeeded; spawn the OrderActor.
-            OrderActor.OrderResponse orderDetails = new OrderActor.OrderResponse(orderId, userId, items, totalPriceFromProducts, "PLACED");
-            // Spawn a new OrderActor with a unique name, for example "order-" + orderId.
-            ActorRef<OrderActor.Command> orderActor = getContext().spawn(OrderActor.create(orderId, userId, items, totalPriceFromProducts, "PLACED"), "order-" + orderId);
-            getContext().getLog().info("OrderActor spawned for orderId {}", orderId);
-            // Now complete the order processing.
-            getContext().getSelf().tell(new OrderProcessingComplete(true, "Order processed and OrderActor spawned successfully"));
+             // All steps succeeded; initialize the OrderActor as a sharded entity.
+             EntityRef<OrderActor.Command> orderEntity =
+                     sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
+             // Create a message adapter to receive the initialization response.
+             ActorRef<OrderActor.OperationResponse> initAdapter = getContext().messageAdapter(OrderActor.OperationResponse.class,
+                     resp -> new OrderInitialized(resp));
+             // Send an InitializeOrder message with the necessary fields.
+             orderEntity.tell(new OrderActor.InitializeOrder(orderId, userId, items, totalPriceFromProducts, "PLACED", initAdapter));
+        }
+        return this;
+    }
+
+    // Step 10: Handle the OrderInitialized response and then request order details.
+    private Behavior<Command> onOrderInitialized(OrderInitialized msg) {
+        if (!msg.response.success) {
+            getContext().getLog().error("Order initialization failed: {}", msg.response.message);
+            getContext().getSelf().tell(new OrderProcessingComplete(false, "Order initialization failed"));
+            return this;
+        } else {
+            // Now request the complete order details.
+            EntityRef<OrderActor.Command> orderEntity =
+                    sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
+            ActorRef<OrderActor.OrderResponse> adapter = getContext().messageAdapter(OrderActor.OrderResponse.class,
+                    orderResp -> new OrderCreated(orderResp));
+            orderEntity.tell(new OrderActor.GetOrder(adapter));
         }
         return this;
     }
 
     // Final step: Complete the order processing.
+    // Step 11: Once the OrderActor responds with its details, send the final response.
+    private Behavior<Command> onOrderCreated(OrderCreated msg) {
+        OrderActor.OrderResponse orderResp = msg.orderResponse;
+        getContext().getSelf().tell(new OrderProcessingComplete(true, "Order created successfully"));
+        // Save the order details in the final response.
+        getContext().getLog().info("Order created with details: OrderId: {}, UserId: {}, TotalPrice: {}, Status: {}",
+                orderResp.orderId, orderResp.userId, orderResp.totalPrice, orderResp.status);
+        // Reply with full order details.
+        pendingReplyTo.tell(new PostOrderResponse(true, "Order created successfully", orderResp));
+        return Behaviors.stopped();
+    }
+
+    // Final step: In case of failure.
     private Behavior<Command> onOrderProcessingComplete(OrderProcessingComplete msg) {
-        pendingReplyTo.tell(new PostOrderResponse(msg.success,
-                "Order " + orderId + (msg.success ? " created successfully." : " failed: " + msg.message)));
+        if (!msg.success) {
+            pendingReplyTo.tell(new PostOrderResponse(false, "Order " + orderId + " failed: " + msg.message, null));
+        }
         return Behaviors.stopped();
     }
 
