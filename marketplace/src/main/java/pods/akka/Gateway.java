@@ -13,15 +13,19 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
-import pods.akka.actors.ProductActor;
 import akka.cluster.sharding.typed.javadsl.EntityContext;
+import pods.akka.actors.ProductActor;
+import pods.akka.actors.OrderActor;
+import pods.akka.actors.PostOrder;
+
+
 
 public class Gateway extends AbstractBehavior<Gateway.Command> {
 	/* This class is also a skeleton class. 
 	 * Actually, Command below should be an interface. It should have the necessary number of implementing classes and corresponding event handlers. The implementing classes should have fields to hold the required elements of the http request (request path and request body), in addition to the reply-to ActorRef. The event handlers could use some suitable json parser to parse any json in the original http request body. Similarly, the Response class should be populated with the actual response.
 	 */
 	int responseNum = 0;
-	
+    
     private final ClusterSharding sharding;
     
     // Create a few ProductActor entities for demonstration purposes
@@ -34,10 +38,12 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 	// }
     public interface Command extends CborSerializable{}
 
-    public static final record GetProductById(String productId, ActorRef<ProductActor.ProductResponse> replyTo) implements Command{
+    public static final record GetProductById(String productId, ActorRef<ProductActor.ProductResponse> replyTo) implements Command{}
 
-    }
-	
+ 
+    public static final record OrderItem(String productId, int quantity) {}
+    public static final record PostOrderReq(int userId,List<OrderActor.OrderItem> items,ActorRef<PostOrder.PostOrderResponse> replyTo) implements Command{}
+
 	public static class Response {
 		String resp;
 		public Response(String s) {resp = s;}
@@ -90,7 +96,10 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
     
     @Override
     public Receive<Command> createReceive() {
-        return newReceiveBuilder().onMessage(GetProductById.class, this::onGetProductById).build();
+        return newReceiveBuilder().
+        onMessage(GetProductById.class, this::onGetProductById)
+        .onMessage(PostOrderReq.class, this::onPostOrderReq)
+        .build();
     }
     
     private Behavior<Command> onGetProductById(GetProductById req) {
@@ -99,6 +108,15 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
             sharding.entityRefFor(ProductActor.TypeKey, req.productId);
         
         productEntity.tell(new ProductActor.GetProduct(req.replyTo));
+        return this;
+      }
+      private Behavior<Command> onPostOrderReq(PostOrderReq req) {
+        
+        ActorRef<PostOrder.Command> postOrderWorker = 
+            getContext().spawn(PostOrder.create(), "PostOrderWorker-" + responseNum++);
+        
+        postOrderWorker.tell(new PostOrder.StartOrder(req.userId,req.items,req.replyTo));
+        // productEntity.tell(new ProductActor.GetProduct(req.replyTo));
         return this;
       }
 

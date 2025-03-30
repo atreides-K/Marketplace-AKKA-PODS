@@ -38,12 +38,12 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
 
     // Response message carrying order details.
     public static final class OrderResponse implements CborSerializable {
-        public final int orderId;
+        public final String orderId;
         public final int userId;
         public final List<OrderItem> items;
         public final int totalPrice;
         public final String status;
-        public OrderResponse(int orderId, int userId, List<OrderItem> items, int totalPrice, String status) {
+        public OrderResponse(String orderId, int userId, List<OrderItem> items, int totalPrice, String status) {
             this.orderId = orderId;
             this.userId = userId;
             this.items = items;
@@ -73,20 +73,20 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     }
 
     // Order state.
-    private final int orderId;
+    private final String orderId;
     private final int userId;
     private final List<OrderItem> items;
     private int totalPrice;
     private String status;
 
     // Factory method to create an OrderActor.
-    public static Behavior<Command> create(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
+    public static Behavior<Command> create(String orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
         return Behaviors.setup(context ->
             new OrderActor(context, orderId, userId, items, totalPrice, initialStatus)
         );
     }
 
-    private OrderActor(ActorContext<Command> context, int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
+    private OrderActor(ActorContext<Command> context, String orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
         super(context);
         this.orderId = orderId;
         this.userId = userId;

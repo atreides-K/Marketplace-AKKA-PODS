@@ -21,7 +21,9 @@ import akka.actor.typed.Behavior;
 import akka.actor.typed.Scheduler;
 import akka.actor.typed.javadsl.AskPattern;
 import akka.actor.typed.javadsl.Behaviors;
+import pods.akka.Gateway;
 import pods.akka.actors.ProductActor;
+import pods.akka.actors.PostOrder;
 
 // Main class
 public class Main {
@@ -40,50 +42,141 @@ public class Main {
                 	
                     // i think theis Gateway.Command is generic example will subs with an actual one here GetProductCommand
                     String[] pathParts = req.getRequestURI().getPath().split("/");
-                    String productId;
-                    if (pathParts.length > 2) {
-                        // Extract the productId from the path
-                        try {
-                            // check if the id is indeed an integer
-                            Integer.parseInt(pathParts[2]);
-                            productId = pathParts[2];
-                        } catch (NumberFormatException e) {
-                            req.sendResponseHeaders(400, 0); // Bad Request
+                    if (pathParts.length > 1) {
+                        String secondWord = pathParts[1];
+                        if ("products".equals(secondWord)) {
+                            // Handle product-related requests
+                            // This is already implemented below
+                            String productId;
+                                if (pathParts.length > 2) {
+                                    // Extract the productId from the path
+                                    try {
+                                        // check if the id is indeed an integer
+                                        Integer.parseInt(pathParts[2]);
+                                        productId = pathParts[2];
+                                    } catch (NumberFormatException e) {
+                                        req.sendResponseHeaders(400, 0); // Bad Request
+                                        req.getResponseBody().close();
+                                        return;
+                                    }
+                                    // Use productId not there as needed
+                                } else {
+                                    req.sendResponseHeaders(400, 0); // Bad Request
+                                    req.getResponseBody().close();
+                                    return;
+                                }
+                                CompletionStage<ProductActor.ProductResponse> compl = 
+                                        AskPattern.ask(
+                                            gateway,
+                                            (ActorRef<ProductActor.ProductResponse> ref) -> new Gateway.GetProductById(productId, ref), 
+                                            askTimeout,
+                                            scheduler);
+
+
+                                ObjectMapper objectMapper = new ObjectMapper();
+                                        compl.thenAccept((ProductActor.ProductResponse r) -> {
+                                try {
+                                    // Convert the response object to JSON
+                                    String jsonResponse = objectMapper.writeValueAsString(r);
+                                    
+                                    // Set response headers
+                                    req.getResponseHeaders().set("Content-Type", "application/json");
+                                    req.sendResponseHeaders(200, jsonResponse.length());
+
+                                    // Send response
+                                    OutputStream os = req.getResponseBody();
+                                    os.write(jsonResponse.getBytes());
+                                    os.close();
+                                } catch (IOException e) {
+                                    e.printStackTrace();
+                                }
+                            });
+
+
+                        } else if ("orders".equals(secondWord)) {
+                            req.sendResponseHeaders(501, 0); // Not Implemented
+                            req.getResponseBody().close();
+                            return;
+                        } else {
+                            req.sendResponseHeaders(404, 0); // Not Found
                             req.getResponseBody().close();
                             return;
                         }
-                        // Use productId not there as needed
                     } else {
                         req.sendResponseHeaders(400, 0); // Bad Request
                         req.getResponseBody().close();
                         return;
                     }
-                    CompletionStage<ProductActor.ProductResponse> compl = 
-                			AskPattern.ask(
-                				  gateway,
-                				  (ActorRef<ProductActor.ProductResponse> ref) -> new Gateway.GetProductById(productId, ref), 
-                				  askTimeout,
-                				  scheduler);
+                    
 
-                                  
-                    ObjectMapper objectMapper = new ObjectMapper();
-                            compl.thenAccept((ProductActor.ProductResponse r) -> {
-                    try {
-                        // Convert the response object to JSON
-                        String jsonResponse = objectMapper.writeValueAsString(r);
-                        
-                        // Set response headers
-                        req.getResponseHeaders().set("Content-Type", "application/json");
-                        req.sendResponseHeaders(200, jsonResponse.length());
+            } else if ("POST".equals(req.getRequestMethod())) {
+                // Handle POST requests
+                // You can implement similar logic for handling POST requests here
+                String[] pathParts = req.getRequestURI().getPath().split("/");
+                if (pathParts.length > 1) {
+                    String secondWord = pathParts[1];
+                    if ("orders".equals(secondWord)) {
+                        // Handle order-related POST requests
+                        String productId;
+                           
+                                ObjectMapper objectMapper = new ObjectMapper();
+                                Gateway.PostOrderReq orderRequest;
+                                try {
+                                    // Parse the request body into OrderRequest
+                                    orderRequest = objectMapper.readValue(req.getRequestBody(), Gateway.PostOrderReq.class);
+                                } catch (IOException e) {
+                                    req.sendResponseHeaders(400, 0); // Bad Request
+                                    req.getResponseBody().close();
+                                    return;
+                                }
 
-                        // Send response
-                        OutputStream os = req.getResponseBody();
-                        os.write(jsonResponse.getBytes());
-                        os.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
+                                // Send the parsed OrderRequest to the gateway actor                   
+                                CompletionStage<PostOrder.PostOrderResponse> compl = 
+                                        AskPattern.ask(
+                                            gateway,
+                                            (ActorRef<PostOrder.PostOrderResponse> ref) -> new Gateway.PostOrderReq(orderRequest.userId(),orderRequest.items(), ref), 
+                                            askTimeout,
+                                            scheduler);
+
+
+                                
+                                        compl.thenAccept((PostOrder.PostOrderResponse r) -> {
+                                try {
+                                    // Convert the response object to JSON
+                                    String jsonResponse = objectMapper.writeValueAsString(r);
+                                    
+                                    // Set response headers
+                                    req.getResponseHeaders().set("Content-Type", "application/json");
+                                    req.sendResponseHeaders(200, jsonResponse.length());
+
+                                    // Send response
+                                    OutputStream os = req.getResponseBody();
+                                    os.write(jsonResponse.getBytes());
+                                    os.close();
+                                } catch (IOException e) {
+                                    e.printStackTrace();
+                                }
+                            });
+
+
+                        req.getResponseBody().close();
+                        return;
+                    } else {
+                        req.sendResponseHeaders(400, 0); // Bad Request
+                        req.getResponseBody().close();
+                        return;
                     }
-                });
+                } else {
+                    req.sendResponseHeaders(400, 0); // Bad Request
+                    req.getResponseBody().close();
+                    return;
+                }
+               
+            } else {
+                req.sendResponseHeaders(400, 0); // Method Not Allowed
+                req.getResponseBody().close();
+                return;
+                    
                 	
             }
         }
