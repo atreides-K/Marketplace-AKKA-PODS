@@ -34,7 +34,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 	// }
     public interface Command extends CborSerializable{}
 
-    public static final record GetProductById(String productId, ActorRef<Response> replyTo) implements Command{
+    public static final record GetProductById(String productId, ActorRef<ProductActor.ProductResponse> replyTo) implements Command{
 
     }
 	
@@ -98,7 +98,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         EntityRef<ProductActor.Command> productEntity =
             sharding.entityRefFor(ProductActor.TypeKey, req.productId);
         
-        // productEntity.tell(new ProductActor.GetProduct(req.replyTo));
+        productEntity.tell(new ProductActor.GetProduct(req.replyTo));
         return this;
       }
 

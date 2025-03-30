@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletionStage;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -20,6 +21,7 @@ import akka.actor.typed.Behavior;
 import akka.actor.typed.Scheduler;
 import akka.actor.typed.javadsl.AskPattern;
 import akka.actor.typed.javadsl.Behaviors;
+import pods.akka.actors.ProductActor;
 
 // Main class
 public class Main {
@@ -56,24 +58,32 @@ public class Main {
                         req.getResponseBody().close();
                         return;
                     }
-                    CompletionStage<Gateway.Response> compl = 
+                    CompletionStage<ProductActor.ProductResponse> compl = 
                 			AskPattern.ask(
                 				  gateway,
-                				  (ActorRef<Gateway.Response> ref) -> new Gateway.GetProductById(productId, ref), 
+                				  (ActorRef<ProductActor.ProductResponse> ref) -> new Gateway.GetProductById(productId, ref), 
                 				  askTimeout,
                 				  scheduler);
-                    compl.thenAccept((Gateway.Response r) -> {
-                    String response = r.resp;
+
+                                  
+                    ObjectMapper objectMapper = new ObjectMapper();
+                            compl.thenAccept((ProductActor.ProductResponse r) -> {
                     try {
-                            req.sendResponseHeaders(200, response.length());
-                            OutputStream os = req.getResponseBody();
-                            os.write(response.getBytes());
-                            os.close();
-                        } catch (IOException e) {
-                                e.printStackTrace();
-                        }
+                        // Convert the response object to JSON
+                        String jsonResponse = objectMapper.writeValueAsString(r);
+                        
+                        // Set response headers
+                        req.getResponseHeaders().set("Content-Type", "application/json");
+                        req.sendResponseHeaders(200, jsonResponse.length());
+
+                        // Send response
+                        OutputStream os = req.getResponseBody();
+                        os.write(jsonResponse.getBytes());
+                        os.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
                     }
-                );
+                });
                 	
             }
         }
@@ -149,16 +159,7 @@ public class Main {
         System.out.println("Loaded Configurations:");
         System.out.println("Port: " + port);
 
-        // config = ConfigFactory.parseString(
-        // "akka.remote.artery.canonical.port=" + port + "\n" +
-        // "akka.cluster.seed-nodes=[\"akka://ClusterSystem@127.0.0.1:8080\"]"
-        // ).withFallback(config);
-
-        // System.out.println("Updated Configurations:");
-        // System.out.println(config.root().render());
-
-        // Create the ActorSystem
-        
+ 
         //The actor system name should be the same for the Cluster
         final ActorSystem<Void> system = ActorSystem.create(Main.create(), "ClusterSystem", config);
 
