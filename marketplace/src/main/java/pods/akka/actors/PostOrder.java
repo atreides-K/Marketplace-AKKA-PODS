@@ -125,6 +125,14 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
     }
 
+    // Internal message to capture OrderActor initialization result.
+    private static final class OrderInitialized implements Command {
+        public final OrderActor.OperationResponse response;
+        public OrderInitialized(OrderActor.OperationResponse response) {
+            this.response = response;
+        }
+    }
+
     // State variables.
     private int orderId;
     private int userId;
@@ -160,6 +168,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 .onMessage(WalletCheckResult.class, this::onWalletCheckResult)
                 .onMessage(WalletDebitResult.class, this::onWalletDebitResult)
                 .onMessage(DiscountUpdated.class, this::onDiscountUpdated)
+                .onMessage(OrderInitialized.class, this::onOrderInitialized)
                 .onMessage(OrderCreated.class, this::onOrderCreated)
                 .onMessage(OrderProcessingComplete.class, this::onOrderProcessingComplete)
                 .build();
@@ -341,12 +350,28 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             getContext().getLog().error("Discount update failed: {}", msg.message);
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Discount update failed"));
         } else {
-            // All steps succeeded; spawn the OrderActor as a sharded entity.
+            // All steps succeeded; initialize the OrderActor as a sharded entity.
             EntityRef<OrderActor.Command> orderEntity =
                     sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
-            // Spawn the OrderActor by sending an initialization command.
-            // Here, we assume that OrderActor is created on first message.
-            // After creation, request its details.
+            // Create a message adapter to receive the initialization response.
+            ActorRef<OrderActor.OperationResponse> initAdapter = getContext().messageAdapter(OrderActor.OperationResponse.class,
+                    resp -> new OrderInitialized(resp));
+            // Send an InitializeOrder message with the necessary fields.
+            orderEntity.tell(new OrderActor.InitializeOrder(orderId, userId, items, totalPriceFromProducts, "PLACED", initAdapter));
+        }
+        return this;
+    }
+
+    // Step 10: Handle the OrderInitialized response and then request order details.
+    private Behavior<Command> onOrderInitialized(OrderInitialized msg) {
+        if (!msg.response.success) {
+            getContext().getLog().error("Order initialization failed: {}", msg.response.message);
+            getContext().getSelf().tell(new OrderProcessingComplete(false, "Order initialization failed"));
+            return this;
+        } else {
+            // Now request the complete order details.
+            EntityRef<OrderActor.Command> orderEntity =
+                    sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
             ActorRef<OrderActor.OrderResponse> adapter = getContext().messageAdapter(OrderActor.OrderResponse.class,
                     orderResp -> new OrderCreated(orderResp));
             orderEntity.tell(new OrderActor.GetOrder(adapter));
@@ -354,7 +379,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         return this;
     }
 
-    // Step 10: Once the OrderActor responds with its details, send the final response.
+    // Step 11: Once the OrderActor responds with its details, send the final response.
     private Behavior<Command> onOrderCreated(OrderCreated msg) {
         OrderActor.OrderResponse orderResp = msg.orderResponse;
         getContext().getSelf().tell(new OrderProcessingComplete(true, "Order created successfully"));

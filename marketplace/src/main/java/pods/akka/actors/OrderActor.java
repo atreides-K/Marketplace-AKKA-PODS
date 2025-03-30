@@ -18,6 +18,25 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     public static final EntityTypeKey<Command> TypeKey =
         EntityTypeKey.create(OrderActor.Command.class, "OrderEntity");
 
+    // Initialization message to set the order details.
+    public static final class InitializeOrder implements Command {
+        public final int orderId;
+        public final int userId;
+        public final List<OrderItem> items;
+        public final int totalPrice;
+        public final String initialStatus;
+        public final ActorRef<OperationResponse> replyTo;
+
+        public InitializeOrder(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
+            this.orderId = orderId;
+            this.userId = userId;
+            this.items = items;
+            this.totalPrice = totalPrice;
+            this.initialStatus = initialStatus;
+            this.replyTo = replyTo;
+        }
+    }
+
     // Message to get the order details.
     public static final class GetOrder implements Command {
         public final ActorRef<OrderResponse> replyTo;
@@ -73,46 +92,66 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     }
 
     // Order state.
-    private final int orderId;
-    private final int userId;
-    private final List<OrderItem> items;
+    private int orderId;
+    private int userId;
+    private List<OrderItem> items;
     private int totalPrice;
     private String status;
+    private boolean initialized;
 
     // Factory method to create an OrderActor.
-    public static Behavior<Command> create(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
-        return Behaviors.setup(context ->
-            new OrderActor(context, orderId, userId, items, totalPrice, initialStatus)
-        );
+    public static Behavior<Command> create(String entityId) {
+        // entityId can be converted to int orderId if needed.
+        return Behaviors.setup(context -> new OrderActor(context));
     }
 
-    private OrderActor(ActorContext<Command> context, int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
+    private OrderActor(ActorContext<Command> context) {
         super(context);
-        this.orderId = orderId;
-        this.userId = userId;
-        this.items = items;
-        this.totalPrice = totalPrice;
-        this.status = initialStatus;
-        getContext().getLog().info("OrderActor created: OrderId: {}, UserId: {}, TotalPrice: {}, Status: {}",
-                orderId, userId, totalPrice, status);
+        this.initialized = false;
     }
 
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
+            .onMessage(InitializeOrder.class, this::onInitializeOrder)
             .onMessage(GetOrder.class, this::onGetOrder)
             .onMessage(UpdateStatus.class, this::onUpdateStatus)
             .build();
     }
 
+    private Behavior<Command> onInitializeOrder(InitializeOrder msg) {
+        if (!initialized) {
+            this.orderId = msg.orderId;
+            this.userId = msg.userId;
+            this.items = msg.items;
+            this.totalPrice = msg.totalPrice;
+            this.status = msg.initialStatus;
+            this.initialized = true;
+            getContext().getLog().info("OrderActor initialized: OrderId: {}, UserId: {}, TotalPrice: {}, Status: {}",
+                    orderId, userId, totalPrice, status);
+            msg.replyTo.tell(new OperationResponse(true, "Order initialized"));
+        } else {
+            msg.replyTo.tell(new OperationResponse(false, "Order already initialized"));
+        }
+        return this;
+    }
+
     private Behavior<Command> onGetOrder(GetOrder msg) {
-        msg.replyTo.tell(new OrderResponse(orderId, userId, items, totalPrice, status));
+        if (!initialized) {
+            msg.replyTo.tell(new OrderResponse(0, 0, null, 0, "NotInitialized"));
+        } else {
+            msg.replyTo.tell(new OrderResponse(orderId, userId, items, totalPrice, status));
+        }
         return this;
     }
 
     private Behavior<Command> onUpdateStatus(UpdateStatus msg) {
-        this.status = msg.newStatus;
-        msg.replyTo.tell(new OperationResponse(true, "Order status updated to " + status));
+        if (!initialized) {
+            msg.replyTo.tell(new OperationResponse(false, "Order not initialized"));
+        } else {
+            this.status = msg.newStatus;
+            msg.replyTo.tell(new OperationResponse(true, "Order status updated to " + status));
+        }
         return this;
     }
 }
