@@ -7,6 +7,8 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.javadsl.Behaviors;
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -82,12 +84,16 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
 
     // HttpClient for making external HTTP calls.
     private final HttpClient httpClient;
+    private final ClusterSharding sharding;
+
+    // We now hold a reference to the sharded OrderActor.
+    private EntityRef<OrderActor.Command> orderEntity;
 
     // State variables.
     private int orderId;
     private int userId;
     private ActorRef<DeleteOrderResponse> pendingReplyTo;
-    private ActorRef<OrderActor.Command> orderActor; // reference to the OrderActor
+    //private ActorRef<OrderActor.Command> orderActor; // reference to the OrderActor
 
     public static Behavior<Command> create() {
         return Behaviors.setup(DeleteOrder::new);
@@ -96,6 +102,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     private DeleteOrder(ActorContext<Command> context) {
         super(context);
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        this.sharding = ClusterSharding.get(getContext().getSystem());
     }
 
     @Override
@@ -114,22 +121,20 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         this.orderId = cmd.orderId;
         this.userId = cmd.userId;
         this.pendingReplyTo = cmd.replyTo;
+
+        // Look up the OrderActor by using its sharded entity ref.
+        this.orderEntity = sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
         
-        // Look up the OrderActor by its known name ("order-" + orderId)
-        Optional<ActorRef<Void>> childOpt = getContext().getChild("order-" + orderId);
-        Optional<ActorRef<OrderActor.Command>> orderActorOpt = childOpt.map(actor -> actor.unsafeUpcast());
-        if (orderActorOpt.isEmpty()) {
-            getContext().getLog().error("OrderActor for order {} does not exist.", orderId);
-            pendingReplyTo.tell(new DeleteOrderResponse(false, "Order not found"));
-            return Behaviors.stopped();
-        } else {
-            this.orderActor = orderActorOpt.get();
-            // Step 2: Update order status to CANCELLED.
-            ActorRef<OrderActor.OperationResponse> statusAdapter = getContext().messageAdapter(OrderActor.OperationResponse.class,
-                    response -> new OrderStatusUpdated(response.success, response.message));
-            orderActor.tell(new OrderActor.UpdateStatus("CANCELLED", statusAdapter));
-            return this;
-        }
+        //////////////////#####################//////////////////////
+        /// TODO: Check if the order exists. If not, return an error.
+        /// This can be done by sending a message to the OrderActor to check its existence.
+        // We assume the order exists if it was previously created.
+        // Step 2: Update order status to "CANCELLED".
+        ActorRef<OrderActor.OperationResponse> statusAdapter =
+                getContext().messageAdapter(OrderActor.OperationResponse.class,
+                        response -> new OrderStatusUpdated(response.success, response.message));
+        orderEntity.tell(new OrderActor.UpdateStatus("CANCELLED", statusAdapter));
+        return this;
     }
 
     // Step 3: Handle response from OrderActor status update.
@@ -143,7 +148,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
             // Step 4: Query the order details to get total price and items.
             ActorRef<OrderActor.OrderResponse> getAdapter = getContext().messageAdapter(OrderActor.OrderResponse.class,
                     orderResp -> new OrderDetailsReceived(orderResp));
-            orderActor.tell(new OrderActor.GetOrder(getAdapter));
+            orderEntity.tell(new OrderActor.GetOrder(getAdapter));
             return this;
         }
     }
@@ -155,8 +160,9 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         int totalPrice = details.totalPrice;
         // Step 6: Restock each product in the order.
         for (OrderActor.OrderItem item : details.items) {
-            ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.productId);
-            productActor.tell(new ProductActor.AddStock(item.quantity));
+            EntityRef<ProductActor.Command> productEntity =
+                    sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.productId));
+            productEntity.tell(new ProductActor.AddStock(item.quantity));
         }
         getContext().getLog().info("Restocked products for order {}", orderId);
         // Step 7: Credit the wallet with the total price.

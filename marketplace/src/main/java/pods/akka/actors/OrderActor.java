@@ -6,12 +6,17 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.javadsl.Behaviors;
+import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
+import pods.akka.CborSerializable;
 import java.util.List;
 
-public class OrderActor extends AbstractBehavior<OrderActor.Command> {
+public class OrderActor extends AbstractBehavior<OrderActor.Command> implements CborSerializable {
 
     // Message protocol for OrderActor.
-    public interface Command {}
+    public interface Command extends CborSerializable {}
+
+    public static final EntityTypeKey<Command> TypeKey =
+        EntityTypeKey.create(OrderActor.Command.class, "OrderEntity");
 
     // Message to get the order details.
     public static final class GetOrder implements Command {
@@ -32,7 +37,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
     }
 
     // Response message carrying order details.
-    public static final class OrderResponse {
+    public static final class OrderResponse implements CborSerializable {
         public final int orderId;
         public final int userId;
         public final List<OrderItem> items;
@@ -48,7 +53,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
     }
 
     // Operation response for status updates.
-    public static final class OperationResponse {
+    public static final class OperationResponse implements CborSerializable {
         public final boolean success;
         public final String message;
         public OperationResponse(boolean success, String message) {
@@ -58,7 +63,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
     }
 
     // A simple representation of an order item.
-    public static final class OrderItem {
+    public static final class OrderItem implements CborSerializable {
         public final int productId;
         public final int quantity;
         public OrderItem(int productId, int quantity) {
@@ -71,12 +76,14 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
     private final int orderId;
     private final int userId;
     private final List<OrderItem> items;
-    private int totalPrice; // Final computed price after processing.
+    private int totalPrice;
     private String status;
 
     // Factory method to create an OrderActor.
     public static Behavior<Command> create(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
-        return Behaviors.setup(context -> new OrderActor(context, orderId, userId, items, totalPrice, initialStatus));
+        return Behaviors.setup(context ->
+            new OrderActor(context, orderId, userId, items, totalPrice, initialStatus)
+        );
     }
 
     private OrderActor(ActorContext<Command> context, int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus) {
@@ -86,29 +93,26 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
         this.items = items;
         this.totalPrice = totalPrice;
         this.status = initialStatus;
-        getContext().getLog().info("OrderActor created with orderId: {}, userId: {}, initialStatus: {}", orderId, userId, initialStatus);
+        getContext().getLog().info("OrderActor created: OrderId: {}, UserId: {}, TotalPrice: {}, Status: {}",
+                orderId, userId, totalPrice, status);
     }
 
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
-                .onMessage(GetOrder.class, this::onGetOrder)
-                .onMessage(UpdateStatus.class, this::onUpdateStatus)
-                .build();
+            .onMessage(GetOrder.class, this::onGetOrder)
+            .onMessage(UpdateStatus.class, this::onUpdateStatus)
+            .build();
     }
 
     private Behavior<Command> onGetOrder(GetOrder msg) {
-        getContext().getLog().info("Received GetOrder request for orderId: {}", orderId);
         msg.replyTo.tell(new OrderResponse(orderId, userId, items, totalPrice, status));
-        getContext().getLog().info("Replied with order details for orderId: {}", orderId);
         return this;
     }
 
     private Behavior<Command> onUpdateStatus(UpdateStatus msg) {
-        getContext().getLog().info("Received UpdateStatus request for orderId: {} with newStatus: {}", orderId, msg.newStatus);
         this.status = msg.newStatus;
         msg.replyTo.tell(new OperationResponse(true, "Order status updated to " + status));
-        getContext().getLog().info("Order status updated for orderId: {} to newStatus: {}", orderId, status);
         return this;
     }
 }
