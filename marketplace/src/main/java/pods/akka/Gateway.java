@@ -55,7 +55,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
             sharding.init(
                 Entity.of(ProductActor.TypeKey,
                 (EntityContext<ProductActor.Command> entityContext) ->
-                        ProductActor.create(entityContext.getEntityId(),"unknown",0,0)
+                        ProductActor.create(entityContext.getEntityId())
             ));
 
 
@@ -76,8 +76,8 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
                                            productDescription, productPrice, productQuantity);
 
                 // Create ProductActor entities for each product
-            //     sharding.entityRefFor(ProductActor.TypeKey, productId)
-            //             .tell(new ProductActor.InitializeProduct(productId, productName, productPrice, productQuantity));
+                 sharding.entityRefFor(ProductActor.TypeKey, productId)
+                         .tell(new ProductActor.InitializeProduct(productId, productName, productDescription, (int) productPrice, productQuantity));
             }
             // Create ProductActor entities with IDs 101 and 102
             // EntityRef<ProductActor.Command> product101 = sharding.entityRefFor(ProductActor.TypeKey, "101");
