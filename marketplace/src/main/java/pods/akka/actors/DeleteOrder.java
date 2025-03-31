@@ -195,6 +195,8 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         getContext().getLog().info("Restocked products for order {}", orderId);
         // Step 7: Credit the wallet with the total price.
         String creditJson = "{\"action\": \"credit\", \"amount\": " + totalPrice + "}";
+        userId = details.userId; // Get userId from order details
+        getContext().getLog().info("Crediting wallet for user {} with amount {}", userId, totalPrice);
         HttpRequest creditRequest = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:8082/wallets/" + userId))
                 .timeout(Duration.ofSeconds(5))
