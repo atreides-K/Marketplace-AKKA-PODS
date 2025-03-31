@@ -326,15 +326,18 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Wallet debit failed"));
         } else {
             // Step 8: Update discount status.
+            String discountJson = "{\"id\": " + userId + ", \"discount_availed\": true}";
             HttpRequest discountRequest = HttpRequest.newBuilder()
                     .uri(URI.create("http://localhost:8080/users/" + userId + "/discount"))
                     .timeout(Duration.ofSeconds(5))
-                    .GET() // Assuming GET triggers the discount update.
+                    .header("Content-Type", "application/json")
+                    .PUT(HttpRequest.BodyPublishers.ofString(discountJson))
                     .build();
             httpClient.sendAsync(discountRequest, BodyHandlers.ofString())
                     .whenComplete((resp, ex) -> {
                         if (ex != null || resp.statusCode() != 200) {
                             getContext().getSelf().tell(new DiscountUpdated(false, "Discount update failed"));
+                            
                         } else {
                             getContext().getSelf().tell(new DiscountUpdated(true, ""));
                         }
