@@ -3,6 +3,7 @@ package pods.akka;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
@@ -87,7 +88,8 @@ public class Main {
                                     // Send response
                                     OutputStream os = req.getResponseBody();
                                     os.write(jsonResponse.getBytes());
-                                    os.close();
+                                    os.flush();
+                                    req.getResponseBody().close();
                                 } catch (IOException e) {
                                     e.printStackTrace();
                                 }
@@ -153,38 +155,63 @@ public class Main {
 
                                 
                                         compl.thenAccept((PostOrder.PostOrderResponse r) -> {
-                                try {
-                                    // Convert the response object to JSON
-                                    String jsonResponse = objectMapper.writeValueAsString(r);
-                                    
-                                    // Set response headers
-                                    req.getResponseHeaders().set("Content-Type", "application/json");
-                                    req.sendResponseHeaders(200, jsonResponse.length());
+                                
+                                    System.out.println("PostOrder Response: " + r);
+                                    try (OutputStream os = req.getResponseBody()) {
+                                        // Convert the response object to JSON
+                                        String jsonResponse = objectMapper.writeValueAsString(r);
+                                        
+                                        // Set response headers
+                                        req.getResponseHeaders().set("Content-Type", "application/json");
+                                        req.sendResponseHeaders(200, jsonResponse.getBytes().length);
 
-                                    // Send response
-                                    OutputStream os = req.getResponseBody();
-                                    os.write(jsonResponse.getBytes());
-                                    os.close();
-                                } catch (IOException e) {
-                                    e.printStackTrace();
-                                }
+                                        // Send response
+                                        os.write(jsonResponse.getBytes());
+                                    } catch (IOException e) {
+                                        System.err.println("Error writing response: " + e.getMessage());
+                                        e.printStackTrace();
+                                    }
+                                 
                             });
 
 
-                        req.getResponseBody().close();
+                        // req.getResponseBody().close();
                         return;
+
+                        // Map<String, Object> dummyResponse = new HashMap<>();
+                        // dummyResponse.put("status", "success");
+                        // dummyResponse.put("message", "Dummy response from server");
+                        // dummyResponse.put("data", Map.of("id", 123, "name", "Sample Product"));
+        
+                        // // Convert response to JSON
+                        // ObjectMapper objectMapper = new ObjectMapper();
+                        // String jsonResponse = objectMapper.writeValueAsString(dummyResponse);
+                        // byte[] jsonBytes = jsonResponse.getBytes(StandardCharsets.UTF_8);
+        
+                        // // Set response headers
+                        // req.getResponseHeaders().set("Content-Type", "application/json");
+                        // req.sendResponseHeaders(200, jsonBytes.length);
+        
+                        // // Write response
+                        // try (OutputStream os = req.getResponseBody()) {
+                        //     os.write(jsonBytes);
+                        // }
+                       
                     } else {
+                        System.err.println("Error writing response:asdfg " );
                         req.sendResponseHeaders(400, 0); // Bad Request
                         req.getResponseBody().close();
                         return;
                     }
                 } else {
+                    System.err.println("Error writing response:1234 " );
                     req.sendResponseHeaders(400, 0); // Bad Request
                     req.getResponseBody().close();
                     return;
                 }
                
             } else {
+                System.err.println("Error writing response: 123" );
                 req.sendResponseHeaders(400, 0); // Method Not Allowed
                 req.getResponseBody().close();
                 return;
@@ -244,7 +271,7 @@ public class Main {
         	 askTimeout = Duration.ofSeconds(5);
         	 scheduler = context.getSystem().scheduler();
 			// code which starts the http server inside the root actor?
-        	 HttpServer server = HttpServer.create(new InetSocketAddress(8000), 0); /* Creates a HTTP server that runs on localhost and listens to port 8080 */
+        	 HttpServer server = HttpServer.create(new InetSocketAddress(8081), 0); /* Creates a HTTP server that runs on localhost and listens to port 8080 */
              server.createContext("/", new Handler()); /* The "handle" method class OrderHandler will receive each http request and respond to it */
              server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool()); /* Create a thread pool and give it to the server. Server will submit each incoming request to the thread pool. Thread pool will pick a free thread (whenever it becomes available) and run the handle() method in this thread. The request is given as argument to the handle() method. */
              server.start(); /* Start the server */

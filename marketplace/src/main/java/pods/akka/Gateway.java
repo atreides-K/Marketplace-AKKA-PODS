@@ -77,9 +77,14 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 
     private Gateway(ActorContext<Command> context) {
         super(context);
-        
-            // Assuming ProductActor.Command and ProductActor.TypeKey are defined elsewhere
             ClusterSharding sharding = ClusterSharding.get(context.getSystem());
+            sharding.init(
+                Entity.of(OrderActor.TypeKey,
+                (EntityContext<OrderActor.Command> entityContext) ->
+                        OrderActor.create(entityContext.getEntityId())
+            ));
+            // Assuming ProductActor.Command and ProductActor.TypeKey are defined elsewhere
+            
             sharding.init(
                 Entity.of(ProductActor.TypeKey,
                 (EntityContext<ProductActor.Command> entityContext) ->
