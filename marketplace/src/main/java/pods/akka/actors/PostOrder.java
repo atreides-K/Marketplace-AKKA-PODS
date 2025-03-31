@@ -200,8 +200,9 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                     // For simplicity, assume response contains "discount_availed": true/false.
                     boolean discountAvailed = resp.body().contains("\"discount_availed\": true");
                     // Discount is available if not already availed.
-                    // boolean discountAvail = !discountAvailed;
-                    getContext().getSelf().tell(new UserValidated(discountAvailed));
+                    boolean discountAvail = !discountAvailed;
+                    System.out.println("Discount available: " + discountAvail + ", Discount availed: " + discountAvailed);
+                    getContext().getSelf().tell(new UserValidated(discountAvail));
                 }
             });
         return this;
@@ -216,11 +217,12 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             int prodId = item.product_id;
             int qty = item.quantity;
             // Get the ProductActor reference from a registry.
-            EntityRef<ProductActor.Command> productActor = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
+            //ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(prodId);
+            EntityRef<ProductActor.Command> productEntity = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
             // Create a message adapter to convert the OperationResponse to a DeductionResponse.
             ActorRef<ProductActor.OperationResponse> adapter = getContext().messageAdapter(ProductActor.OperationResponse.class,
                     response -> new DeductionResponse(prodId, response));
-            productActor.tell(new ProductActor.DeductStock(qty, adapter));
+            productEntity.tell(new ProductActor.DeductStock(qty, adapter));
         }
         return this;
     }
@@ -244,8 +246,9 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             if (deductionFailed) {
                 // Rollback: Restock products for each order item.
                 for (OrderActor.OrderItem item : items) {
-                    EntityRef<ProductActor.Command> productActor = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
-                    productActor.tell(new ProductActor.AddStock(item.quantity));
+                    //ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.product_id);
+                    EntityRef<ProductActor.Command> productEntity = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
+                    productEntity.tell(new ProductActor.AddStock(item.quantity));
                 }
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Product stock deduction failed"));
             } else {
@@ -273,24 +276,19 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         return this;
     }
 
+    // Add a flag to the PostOrder actor's state:
+    private boolean rolledBack = false;
+
     // Step 5: Handle wallet check result.
     private Behavior<Command> onWalletCheckResult(WalletCheckResult msg) {
         if (!msg.success) {
             getContext().getLog().error("Wallet check failed: {}", msg.message);
-            // Rollback product stock.
-            for (OrderActor.OrderItem item : items) {
-                EntityRef<ProductActor.Command> productActor = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
-                productActor.tell(new ProductActor.AddStock(item.quantity));
-            }
+            rollbackProductStock();
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Wallet check failed"));
         } else {
             if (msg.balance < totalPriceFromProducts) {
                 getContext().getLog().error("Insufficient wallet balance: {} available, {} required", msg.balance, totalPriceFromProducts);
-                // Rollback product stock.
-                for (OrderActor.OrderItem item : items) {
-                    EntityRef<ProductActor.Command> productActor = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
-                    productActor.tell(new ProductActor.AddStock(item.quantity));
-                }
+                rollbackProductStock();
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Insufficient wallet balance"));
             } else {
                 // Step 6: Debit the wallet.
@@ -303,9 +301,13 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                         .build();
                 httpClient.sendAsync(debitRequest, BodyHandlers.ofString())
                         .whenComplete((resp, ex) -> {
+                            System.out.println("Debit response: " + resp.body());
                             if (ex != null || resp.statusCode() != 200) {
+                                System.out.println("Debit error: " + (ex != null ? ex.getMessage() : "Status " + resp.statusCode()));
                                 getContext().getSelf().tell(new WalletDebitResult(false, "Wallet debit failed"));
                             } else {
+                                System.out.println("Debit success: " + resp.body());
+                                //getContext().getLog().info("Wallet debited successfully. Amount: {}", totalPriceFromProducts);
                                 getContext().getSelf().tell(new WalletDebitResult(true, ""));
                             }
                         });
@@ -318,26 +320,21 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     private Behavior<Command> onWalletDebitResult(WalletDebitResult msg) {
         if (!msg.success) {
             getContext().getLog().error("Wallet debit failed: {}", msg.message);
-            // Rollback product stock.
-            for (OrderActor.OrderItem item : items) {
-                EntityRef<ProductActor.Command> productActor = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
-                productActor.tell(new ProductActor.AddStock(item.quantity));
+            if (!rolledBack) {
+                rollbackProductStock();
             }
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Wallet debit failed"));
         } else {
             // Step 8: Update discount status.
-            String discountJson = "{\"id\": " + userId + ", \"discount_availed\": true}";
             HttpRequest discountRequest = HttpRequest.newBuilder()
                     .uri(URI.create("http://localhost:8080/users/" + userId + "/discount"))
                     .timeout(Duration.ofSeconds(5))
-                    .header("Content-Type", "application/json")
-                    .PUT(HttpRequest.BodyPublishers.ofString(discountJson))
+                    .GET() // Assuming GET triggers the discount update.
                     .build();
             httpClient.sendAsync(discountRequest, BodyHandlers.ofString())
                     .whenComplete((resp, ex) -> {
                         if (ex != null || resp.statusCode() != 200) {
                             getContext().getSelf().tell(new DiscountUpdated(false, "Discount update failed"));
-                            
                         } else {
                             getContext().getSelf().tell(new DiscountUpdated(true, ""));
                         }
@@ -345,32 +342,38 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
         return this;
     }
+    
 
-    // Step 9: Handle discount update result.
-    private Behavior<Command> onDiscountUpdated(DiscountUpdated msg) {
-        if (!msg.success) {
-            getContext().getLog().error("Discount update failed: {}", msg.message);
-            getContext().getSelf().tell(new OrderProcessingComplete(false, "Discount update failed"));
-        } else {
-             // All steps succeeded; initialize the OrderActor as a sharded entity.
-             EntityRef<OrderActor.Command> orderEntity =
-                     sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
-             // Create a message adapter to receive the initialization response.
-             ActorRef<OrderActor.OperationResponse> initAdapter = getContext().messageAdapter(OrderActor.OperationResponse.class,
-                     resp -> new OrderInitialized(resp));
-             // Send an InitializeOrder message with the necessary fields.
-             orderEntity.tell(new OrderActor.InitializeOrder(orderId, userId, items, totalPriceFromProducts, "PLACED", initAdapter));
-        }
-        return this;
+// Step 9: Handle discount update result.
+private Behavior<Command> onDiscountUpdated(DiscountUpdated msg) {
+    getContext().getLog().info("Discount update result: {}", msg.success);
+    if (!msg.success) {
+        getContext().getLog().error("Discount update failed: {}", msg.message);
+        getContext().getSelf().tell(new OrderProcessingComplete(false, "Discount update failed"));
+    } else {
+        // All steps succeeded; initialize the OrderActor as a sharded entity.
+        EntityRef<OrderActor.Command> orderEntity =
+                sharding.entityRefFor(OrderActor.TypeKey, String.valueOf(orderId));
+        // Create a message adapter to receive the initialization response.
+        ActorRef<OrderActor.OperationResponse> initAdapter = getContext().messageAdapter(OrderActor.OperationResponse.class,
+                resp -> new OrderInitialized(resp));
+        getContext().getLog().info("Initializing OrderActor with orderId: {}, userId: {}, items: {}, totalPrice: {}, status: PLACED",
+                orderId, userId, items, totalPriceFromProducts);
+        orderEntity.tell(new OrderActor.InitializeOrder(orderId, userId, items, totalPriceFromProducts, "PLACED", initAdapter));
     }
+    return this;
+}
+
 
     // Step 10: Handle the OrderInitialized response and then request order details.
     private Behavior<Command> onOrderInitialized(OrderInitialized msg) {
+        System.out.println("Order initialized response: " + msg.response.success);
         if (!msg.response.success) {
             getContext().getLog().error("Order initialization failed: {}", msg.response.message);
             getContext().getSelf().tell(new OrderProcessingComplete(false, "Order initialization failed"));
             return this;
         } else {
+            getContext().getLog().info("Order initialized successfully with ID: {}", orderId);
             // Now request the complete order details.
             getContext().getLog().info("Order initialized successfully. Requesting order details for OrderId: {}", orderId);
             EntityRef<OrderActor.Command> orderEntity =
@@ -402,6 +405,19 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
         return Behaviors.stopped();
     }
+
+    // Helper method to perform product stock rollback.
+    private void rollbackProductStock() {
+        if (!rolledBack) {
+            for (OrderActor.OrderItem item : items) {
+                EntityRef<ProductActor.Command> productEntity =
+                    sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
+                productEntity.tell(new ProductActor.AddStock(item.quantity));
+            }
+            rolledBack = true;
+            getContext().getLog().info("Performed product stock rollback for order {}", orderId);
+        }
+    }   
 
     // Helper method to parse wallet balance from a JSON response.
     private int parseWalletBalance(String responseBody) {
