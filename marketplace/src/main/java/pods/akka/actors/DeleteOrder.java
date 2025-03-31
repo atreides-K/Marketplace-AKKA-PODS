@@ -24,12 +24,10 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
 
     // Initial command to start order deletion.
     public static final class StartDelete implements Command {
-        public final int orderId;
-        public final int userId;
+        public final String orderId;
         public final ActorRef<DeleteOrderResponse> replyTo;
-        public StartDelete(int orderId, int userId, ActorRef<DeleteOrderResponse> replyTo) {
+        public StartDelete(String orderId, ActorRef<DeleteOrderResponse> replyTo) {
             this.orderId = orderId;
-            this.userId = userId;
             this.replyTo = replyTo;
         }
     }
@@ -101,7 +99,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     private EntityRef<OrderActor.Command> orderEntity;
 
     // State variables.
-    private int orderId;
+    private String orderId;
     private int userId;
     private ActorRef<DeleteOrderResponse> pendingReplyTo;
     //private ActorRef<OrderActor.Command> orderActor; // reference to the OrderActor
@@ -132,7 +130,6 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     // Step 1: Check if the OrderActor exists.
     private Behavior<Command> onStartDelete(StartDelete cmd) {
         this.orderId = cmd.orderId;
-        this.userId = cmd.userId;
         this.pendingReplyTo = cmd.replyTo;
 
         // Look up the OrderActor by using its sharded entity ref.

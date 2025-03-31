@@ -15,6 +15,7 @@ import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.EntityContext;
 import pods.akka.actors.ProductActor;
+import pods.akka.actors.DeleteOrder;
 import pods.akka.actors.OrderActor;
 import pods.akka.actors.PostOrder;
 
@@ -62,6 +63,27 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         public PostOrderReq(int user_id, List<OrderActor.OrderItem> items, ActorRef<PostOrder.PostOrderResponse> replyTo) {
             this.user_id = user_id;
             this.items = items;
+            this.replyTo = replyTo;
+        }
+    }
+
+    // New message type to get order details.
+    public static final class GetOrderById implements Command {
+        public final String order_id;
+        public final ActorRef<OrderActor.OrderResponse> replyTo;
+        public GetOrderById(String order_id, ActorRef<OrderActor.OrderResponse> replyTo) {
+            this.order_id = order_id;
+            this.replyTo = replyTo;
+        }
+    }
+
+    // Add this inside Gateway.java along with the other message types.
+    public static final class DeleteOrderReq implements Command {
+        public final String order_id; // The order ID as a string
+        public final ActorRef<DeleteOrder.DeleteOrderResponse> replyTo;
+
+        public DeleteOrderReq(String order_id, ActorRef<DeleteOrder.DeleteOrderResponse> replyTo) {
+            this.order_id = order_id;
             this.replyTo = replyTo;
         }
     }
@@ -126,6 +148,8 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         return newReceiveBuilder().
         onMessage(GetProductById.class, this::onGetProductById)
         .onMessage(PostOrderReq.class, this::onPostOrderReq)
+        .onMessage(GetOrderById.class, this::onGetOrderById)
+        .onMessage(DeleteOrderReq.class, this::onDeleteOrderReq)
         .build();
     }
     
@@ -147,4 +171,18 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         return this;
       }
 
+      private Behavior<Command> onGetOrderById(GetOrderById req) {
+        EntityRef<OrderActor.Command> orderEntity =
+            sharding.entityRefFor(OrderActor.TypeKey, req.order_id);
+        orderEntity.tell(new OrderActor.GetOrder(req.replyTo));
+        return this;
+    }
+
+    private Behavior<Command> onDeleteOrderReq(DeleteOrderReq req) {
+        // Spawn a DeleteOrder actor to process this request.
+        ActorRef<DeleteOrder.Command> deleteOrderWorker =
+            getContext().spawn(DeleteOrder.create(), "DeleteOrderWorker-" + System.currentTimeMillis());
+        deleteOrderWorker.tell(new DeleteOrder.StartDelete(req.order_id, req.replyTo));
+        return this;
+    }
 }

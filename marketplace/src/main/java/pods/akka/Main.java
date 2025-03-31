@@ -24,6 +24,8 @@ import akka.actor.typed.javadsl.AskPattern;
 import akka.actor.typed.javadsl.Behaviors;
 import pods.akka.Gateway;
 import pods.akka.actors.ProductActor;
+import pods.akka.actors.DeleteOrder;
+import pods.akka.actors.OrderActor;
 import pods.akka.actors.PostOrder;
 
 // Main class
@@ -45,8 +47,9 @@ public class Main {
                     // i think theis Gateway.Command is generic example will subs with an actual one here GetProductCommand
                     String[] pathParts = req.getRequestURI().getPath().split("/");
                     if (pathParts.length > 1) {
+                        ObjectMapper objectMapper = new ObjectMapper();
                         String secondWord = pathParts[1];
-                        if ("products".equals(secondWord)) {
+                        if ("products".equals(secondWord)) {                            
                             // Handle product-related requests
                             // This is already implemented below
                             String productId;
@@ -75,7 +78,7 @@ public class Main {
                                             scheduler);
 
 
-                                ObjectMapper objectMapper = new ObjectMapper();
+                                
                                         compl.thenAccept((ProductActor.ProductResponse r) -> {
                                 try {
                                     // Convert the response object to JSON
@@ -97,6 +100,30 @@ public class Main {
 
 
                         } else if ("orders".equals(secondWord)) {
+                    if (pathParts.length > 2) {
+                        // New: handle GET /orders/{orderId}
+                        String orderId = pathParts[2];
+                        CompletionStage<OrderActor.OrderResponse> compl =
+                            AskPattern.ask(gateway,
+                                (ActorRef<OrderActor.OrderResponse> ref) -> new Gateway.GetOrderById(orderId, ref),
+                                askTimeout, scheduler);
+                        compl.thenAccept(orderResp -> {
+                            try {
+                                String jsonResponse = objectMapper.writeValueAsString(orderResp);
+                                req.getResponseHeaders().set("Content-Type", "application/json");
+                                req.sendResponseHeaders(200, jsonResponse.getBytes().length);
+                                OutputStream os = req.getResponseBody();
+                                os.write(jsonResponse.getBytes());
+                                os.close();
+                            } catch (IOException e) {
+                                e.printStackTrace();
+                            }
+                        });
+                    } else {
+                        req.sendResponseHeaders(400, 0);
+                        req.getResponseBody().close();
+                    }
+                }else if ("orders".equals(secondWord)) {
                             req.sendResponseHeaders(501, 0); // Not Implemented
                             req.getResponseBody().close();
                             return;
@@ -210,7 +237,36 @@ public class Main {
                     return;
                 }
                
+            } else if ("DELETE".equals(req.getRequestMethod())) {
+            // Handle DELETE /orders/{orderId}?user_id=123
+            ObjectMapper objectMapper = new ObjectMapper();
+            String[] pathParts = req.getRequestURI().getPath().split("/");
+            if (pathParts.length > 2 && "orders".equals(pathParts[1])) {
+                String orderId = pathParts[2];
+                // Extract user_id from query parameter, e.g., ?user_id=123
+                String query = req.getRequestURI().getQuery();
+                CompletionStage<DeleteOrder.DeleteOrderResponse> compl =
+                    AskPattern.ask(
+                        gateway,
+                        (ActorRef<DeleteOrder.DeleteOrderResponse> ref) -> new Gateway.DeleteOrderReq(orderId, ref),
+                        askTimeout, scheduler);
+                compl.thenAccept(deleteResp -> {
+                    try {
+                        String jsonResponse = objectMapper.writeValueAsString(deleteResp);
+                        req.getResponseHeaders().set("Content-Type", "application/json");
+                        req.sendResponseHeaders(200, jsonResponse.getBytes().length);
+                        OutputStream os = req.getResponseBody();
+                        os.write(jsonResponse.getBytes());
+                        os.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                });
             } else {
+                req.sendResponseHeaders(400, 0);
+                req.getResponseBody().close();
+            }
+        } else {
                 System.err.println("Error writing response: 123" );
                 req.sendResponseHeaders(400, 0); // Method Not Allowed
                 req.getResponseBody().close();
