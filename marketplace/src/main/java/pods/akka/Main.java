@@ -251,7 +251,64 @@ public class Main {
                     return;
                 }
                
-            } else if ("DELETE".equals(req.getRequestMethod())) {
+            } else if ("PUT".equals(req.getRequestMethod())) {
+                ObjectMapper objectMapper = new ObjectMapper();
+                String[] pathParts = req.getRequestURI().getPath().split("/");
+                // Handle PUT /orders/{orderId} to mark an order as delivered.
+                if (pathParts.length > 2 && "orders".equals(pathParts[1])) {
+                    String orderId = pathParts[2];
+                    // Parse and validate request body.
+                    try {
+                        // Read the request body as a Map.
+                        Map<String, Object> requestBody = objectMapper.readValue(req.getRequestBody(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                        // Validate required fields.
+                        if (!requestBody.containsKey("order_id") || !requestBody.containsKey("status")) {
+                            req.sendResponseHeaders(400, 0);
+                            req.getResponseBody().close();
+                            return;
+                        }
+                        String bodyOrderId = requestBody.get("order_id").toString();
+                        String status = requestBody.get("status").toString();
+                        // Check that the order_id in the body matches the URI and status is exactly "DELIVERED".
+                        if (!bodyOrderId.equals(orderId) || !"DELIVERED".equalsIgnoreCase(status)) {
+                            req.sendResponseHeaders(400, 0);
+                            req.getResponseBody().close();
+                            return;
+                        }
+                    } catch (Exception e) {
+                        req.sendResponseHeaders(400, 0);
+                        req.getResponseBody().close();
+                        return;
+                    }
+                    
+                    // If validation passes, send update request via gateway.
+                    CompletionStage<OrderActor.OperationResponse> compl =
+                        AskPattern.ask(gateway,
+                            (ActorRef<OrderActor.OperationResponse> ref) -> new Gateway.PutOrderReq(orderId, ref),
+                            askTimeout, scheduler);
+                    compl.thenAccept(response -> {
+                        try {
+                            // Create a minimal response containing only order_id and status.
+                            Map<String, Object> minimalResponse = new HashMap<>();
+                            minimalResponse.put("order_id", response.order_id);
+                            minimalResponse.put("status", response.status);
+                            String jsonResponse = objectMapper.writeValueAsString(minimalResponse);
+                            req.getResponseHeaders().set("Content-Type", "application/json");
+                            int statusCode = response.success ? 200 : 400;
+                            req.sendResponseHeaders(statusCode, jsonResponse.getBytes(StandardCharsets.UTF_8).length);
+                            try (OutputStream os = req.getResponseBody()) {
+                                os.write(jsonResponse.getBytes(StandardCharsets.UTF_8));
+                            }
+                        } catch(IOException e) {
+                            e.printStackTrace();
+                        }
+                    });
+                } else {
+                    req.sendResponseHeaders(400, 0);
+                    req.getResponseBody().close();
+                }
+            }
+             else if ("DELETE".equals(req.getRequestMethod())) {
             // Handle DELETE /orders/{orderId}?user_id=123
             ObjectMapper objectMapper = new ObjectMapper();
             String[] pathParts = req.getRequestURI().getPath().split("/");
@@ -268,7 +325,11 @@ public class Main {
                     try {
                         String jsonResponse = objectMapper.writeValueAsString(deleteResp);
                         req.getResponseHeaders().set("Content-Type", "application/json");
-                        req.sendResponseHeaders(200, jsonResponse.getBytes().length);
+                        if (deleteResp.success) {
+                            req.sendResponseHeaders(200, jsonResponse.getBytes().length);
+                        } else {
+                            req.sendResponseHeaders(400, -1); // Not Found
+                        }
                         OutputStream os = req.getResponseBody();
                         os.write(jsonResponse.getBytes());
                         os.close();

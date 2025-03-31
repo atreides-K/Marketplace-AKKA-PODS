@@ -77,6 +77,16 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         }
     }
 
+    // New: PUT /orders/{orderId} request to mark order as delivered.
+    public static final class PutOrderReq implements Command {
+        public final String order_id;
+        public final ActorRef<OrderActor.OperationResponse> replyTo;
+        public PutOrderReq(String order_id, ActorRef<OrderActor.OperationResponse> replyTo) {
+            this.order_id = order_id;
+            this.replyTo = replyTo;
+        }
+    }
+
     // Add this inside Gateway.java along with the other message types.
     public static final class DeleteOrderReq implements Command {
         public final String order_id; // The order ID as a string
@@ -149,6 +159,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         onMessage(GetProductById.class, this::onGetProductById)
         .onMessage(PostOrderReq.class, this::onPostOrderReq)
         .onMessage(GetOrderById.class, this::onGetOrderById)
+        .onMessage(PutOrderReq.class, this::onPutOrderReq)
         .onMessage(DeleteOrderReq.class, this::onDeleteOrderReq)
         .build();
     }
@@ -175,6 +186,13 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         EntityRef<OrderActor.Command> orderEntity =
             sharding.entityRefFor(OrderActor.TypeKey, req.order_id);
         orderEntity.tell(new OrderActor.GetOrder(req.replyTo));
+        return this;
+    }
+
+    private Behavior<Command> onPutOrderReq(PutOrderReq req) {
+        EntityRef<OrderActor.Command> orderEntity =
+            sharding.entityRefFor(OrderActor.TypeKey, req.order_id);
+        orderEntity.tell(new OrderActor.UpdateStatus("DELIVERED", req.replyTo));
         return this;
     }
 

@@ -133,6 +133,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             this.orderResponse = orderResponse;
         }
     }
+    
     // State variables.
     private int orderId;
     private int userId;
@@ -216,8 +217,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         for (OrderActor.SimpleOrderItem item : items) {
             int prodId = item.product_id;
             int qty = item.quantity;
-            // Get the ProductActor reference from a registry.
-            //ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(prodId);
+            
             EntityRef<ProductActor.Command> productEntity = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
             // Create a message adapter to convert the OperationResponse to a DeductionResponse.
             ActorRef<ProductActor.OperationResponse> adapter = getContext().messageAdapter(ProductActor.OperationResponse.class,

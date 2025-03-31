@@ -76,12 +76,17 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     // Operation response for status updates.
     public static final class OperationResponse implements CborSerializable {
         public final boolean success;
+        public final String order_id;
+        public final String status;
         public final String message;
-        public OperationResponse(boolean success, String message) {
+        
+        public OperationResponse(boolean success, String order_id, String status, String message) {
             this.success = success;
+            this.order_id = order_id;
+            this.status = status;
             this.message = message;
         }
-    }
+    }  
 
     // This is the simple type that represents the incoming order item (from the request)
     public static final class SimpleOrderItem implements CborSerializable {
@@ -156,10 +161,10 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
             this.initialized = true;
             getContext().getLog().info("OrderActor initialized: OrderId: {}, UserId: {}, TotalPrice: {}, Status: {}",
                     orderId, userId, totalPrice, status);
-            msg.replyTo.tell(new OperationResponse(true, "Order initialized"));
-        } else {
-            msg.replyTo.tell(new OperationResponse(false, "Order already initialized"));
-        }
+                    msg.replyTo.tell(new OperationResponse(true, String.valueOf(orderId), status, "Order initialized"));
+                } else {
+                    msg.replyTo.tell(new OperationResponse(false, String.valueOf(orderId), status, "Order already initialized"));
+                }
         return this;
     }
 
@@ -174,11 +179,15 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
 
     private Behavior<Command> onUpdateStatus(UpdateStatus msg) {
         if (!initialized) {
-            msg.replyTo.tell(new OperationResponse(false, "Order not initialized"));
+            msg.replyTo.tell(new OperationResponse(false, String.valueOf(orderId), status, "Order not initialized"));
+        } else if ("DELIVERED".equalsIgnoreCase(this.status) || "CANCELLED".equalsIgnoreCase(this.status)) {
+            // If the order is already cancelled, do not allow any further status change.
+            msg.replyTo.tell(new OperationResponse(false, String.valueOf(orderId), status, "Order is cancelled, cannot update status"));
         } else {
             this.status = msg.newStatus;
-            msg.replyTo.tell(new OperationResponse(true, "Order status updated to " + status));
+            msg.replyTo.tell(new OperationResponse(true, String.valueOf(orderId), status, "Order status updated to " + status));
         }
         return this;
     }
+    
 }
