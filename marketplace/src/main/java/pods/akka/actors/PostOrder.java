@@ -134,7 +134,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
     }
     // State variables.
-    private String orderId;
+    private int orderId;
     private int userId;
     private List<OrderActor.OrderItem> items;
     private ActorRef<PostOrderResponse> pendingReplyTo;
@@ -176,7 +176,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     // Step 1: Validate user via HTTP call.
     private Behavior<Command> onStartOrder(StartOrder cmd) {
         // this.orderId = cmd.orderId;
-        this.orderId = UUID.randomUUID().toString(); // Generate a unique string ID
+        this.orderId = Math.abs(UUID.randomUUID().hashCode()); // Generate a unique integer ID
         this.userId = cmd.userId;
         this.items = cmd.items;
         this.pendingReplyTo = cmd.replyTo;

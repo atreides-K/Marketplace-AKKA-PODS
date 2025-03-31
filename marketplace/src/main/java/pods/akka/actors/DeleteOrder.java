@@ -137,7 +137,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         
         // Send a GetOrder message to check if the order exists.
         ActorRef<OrderActor.OrderResponse> adapter = getContext().messageAdapter(OrderActor.OrderResponse.class, orderResp -> {
-            if (orderResp.order_id == "0" || "NotInitialized".equals(orderResp.status)) {
+            if (orderResp.order_id == 0 || "NotInitialized".equals(orderResp.status)) {
                 return new OrderNotFound();
             } else {
                 return new OrderFound(orderResp);

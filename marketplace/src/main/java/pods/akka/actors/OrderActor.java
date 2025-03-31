@@ -20,14 +20,14 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
 
     // Initialization message to set the order details.
     public static final class InitializeOrder implements Command {
-        public final String orderId;
+        public final int orderId;
         public final int userId;
         public final List<OrderItem> items;
         public final int totalPrice;
         public final String initialStatus;
         public final ActorRef<OperationResponse> replyTo;
 
-        public InitializeOrder(String orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
+        public InitializeOrder(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
             this.orderId = orderId;
             this.userId = userId;
             this.items = items;
@@ -57,12 +57,12 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
 
     // Response message carrying order details.
     public static final class OrderResponse implements CborSerializable {
-        public final String order_id;
+        public final int order_id;
         public final int user_id;
         public final List<OrderItem> items;
         public final int total_price;
         public final String status;
-        public OrderResponse(String orderId, int userId, List<OrderItem> items, int totalPrice, String status) {
+        public OrderResponse(int orderId, int userId, List<OrderItem> items, int totalPrice, String status) {
             this.order_id = orderId;
             this.user_id = userId;
             this.items = items;
@@ -96,7 +96,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     }
 
     // Order state.
-    private String orderId;
+    private int orderId;
     private int userId;
     private List<OrderItem> items;
     private int totalPrice;
@@ -142,7 +142,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
 
     private Behavior<Command> onGetOrder(GetOrder msg) {
         if (!initialized) {
-            msg.replyTo.tell(new OrderResponse("0", 0, null, 0, "NotInitialized"));
+            msg.replyTo.tell(new OrderResponse(0, 0, null, 0, "NotInitialized"));
         } else {
             msg.replyTo.tell(new OrderResponse(orderId, userId, items, totalPrice, status));
         }
