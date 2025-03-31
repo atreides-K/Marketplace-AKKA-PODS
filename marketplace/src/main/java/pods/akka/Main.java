@@ -113,10 +113,15 @@ public class Main {
                         compl.thenAccept(orderResp -> {
                             try {
                                 String jsonResponse = objectMapper.writeValueAsString(orderResp);
-                                req.getResponseHeaders().set("Content-Type", "application/json");
-                                req.sendResponseHeaders(200, jsonResponse.getBytes().length);
                                 OutputStream os = req.getResponseBody();
+                                req.getResponseHeaders().set("Content-Type", "application/json");
+                                if(orderResp.order_id != 0) {
+                                    req.sendResponseHeaders(200, jsonResponse.getBytes().length);
+                                } else {
+                                    req.sendResponseHeaders(404, -1);
+                                }
                                 os.write(jsonResponse.getBytes());
+                                
                                 os.close();
                             } catch (IOException e) {
                                 e.printStackTrace();
