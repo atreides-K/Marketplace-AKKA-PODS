@@ -198,7 +198,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                     getContext().getSelf().tell(new UserValidationFailed("User validation failed: " + (ex != null ? ex.getMessage() : "Status " + resp.statusCode())));
                 } else {
                     // For simplicity, assume response contains "discount_availed": true/false.
-                    boolean discountAvailed = resp.body().contains("\"discount_availed\": true");
+                    boolean discountAvailed = resp.body().contains("true");
                     // Discount is available if not already availed.
                     boolean discountAvail = !discountAvailed;
                     System.out.println("Discount available: " + discountAvail + ", Discount availed: " + discountAvailed);
@@ -253,6 +253,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Product stock deduction failed"));
             } else {
                 // All product deductions succeeded. Apply discount if available.
+                getContext().getLog().info("Discount Available: {}", discountAvailable);
                 int finalPrice = discountAvailable ? (int) (totalPriceFromProducts * 0.9) : totalPriceFromProducts;
                 totalPriceFromProducts = finalPrice;
                 getContext().getLog().info("Product deductions succeeded. Total price after discount (if any): {}", totalPriceFromProducts);
