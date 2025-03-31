@@ -9,6 +9,8 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import pods.akka.CborSerializable;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 public class OrderActor extends AbstractBehavior<OrderActor.Command> implements CborSerializable {
 
@@ -22,15 +24,15 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     public static final class InitializeOrder implements Command {
         public final int orderId;
         public final int userId;
-        public final List<OrderItem> items;
+        public final List<SimpleOrderItem> simpleItems;
         public final int totalPrice;
         public final String initialStatus;
         public final ActorRef<OperationResponse> replyTo;
 
-        public InitializeOrder(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
+        public InitializeOrder(int orderId, int userId, List<SimpleOrderItem> simpleItems, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
             this.orderId = orderId;
             this.userId = userId;
-            this.items = items;
+            this.simpleItems = simpleItems;
             this.totalPrice = totalPrice;
             this.initialStatus = initialStatus;
             this.replyTo = replyTo;
@@ -81,19 +83,34 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
         }
     }
 
-    // A simple representation of an order item.
-    public static final class OrderItem implements CborSerializable {
+    // This is the simple type that represents the incoming order item (from the request)
+    public static final class SimpleOrderItem implements CborSerializable {
         public final int product_id;
         public final int quantity;
-        public OrderItem() {
+        public SimpleOrderItem() { // default constructor for JSON deserialization
             this.product_id = 0;
             this.quantity = 0;
         }
-        public OrderItem(int productId, int quantity) {
-            this.product_id = productId;
+        public SimpleOrderItem(int product_id, int quantity) {
+            this.product_id = product_id;
             this.quantity = quantity;
         }
     }
+
+    // A simple representation of an order item.
+    public static final class OrderItem implements CborSerializable {
+        public final int id;         // auto-generated unique id for the order item
+        public final int product_id;
+        public final int quantity;
+        public OrderItem(int id, int order_id, int product_id, int quantity) {
+            this.id = id;
+            this.product_id = product_id;
+            this.quantity = quantity;
+        }
+    }
+
+    // A static counter to generate unique order item ids.
+    private static final AtomicInteger orderItemIdCounter = new AtomicInteger(1);
 
     // Order state.
     private int orderId;
@@ -127,7 +144,13 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
         if (!initialized) {
             this.orderId = msg.orderId;
             this.userId = msg.userId;
-            this.items = msg.items;
+            // Transform the simple items:
+            this.items = msg.simpleItems.stream()
+                    .map(simple -> new OrderItem(orderItemIdCounter.getAndIncrement(), 
+                                                 msg.orderId, 
+                                                 simple.product_id, 
+                                                 simple.quantity))
+                    .collect(Collectors.toList());
             this.totalPrice = msg.totalPrice;
             this.status = msg.initialStatus;
             this.initialized = true;
