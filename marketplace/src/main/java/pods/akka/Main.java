@@ -86,8 +86,11 @@ public class Main {
                                     
                                     // Set response headers
                                     req.getResponseHeaders().set("Content-Type", "application/json");
-                                    req.sendResponseHeaders(200, jsonResponse.length());
-
+                                    if (r.price > -1) {
+                                        req.sendResponseHeaders(200, jsonResponse.length());
+                                    } else {
+                                        req.sendResponseHeaders(404, (long)-1);
+                                    }
                                     // Send response
                                     OutputStream os = req.getResponseBody();
                                     os.write(jsonResponse.getBytes());

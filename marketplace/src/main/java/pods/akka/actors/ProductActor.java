@@ -61,13 +61,13 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         public final String name;
         public final String description;
         public final int price;
-        public final int availableStock;
+        public final int stock_quantity;
         public ProductResponse(String id, String name, String description, int price, int availableStock) {
             this.id = id;
             this.name = name;
             this.description = description;
             this.price = price;
-            this.availableStock = availableStock;
+            this.stock_quantity = availableStock;
         }
     }
 
@@ -86,7 +86,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     private String productId = "unknown";
     private String name = "unknown";
     private String description = "unknown";
-    private int price = 0;
+    private int price = -1;
     private int stockQuantity = 0;
 
     // Factory method to create a ProductActor.
