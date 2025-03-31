@@ -57,16 +57,16 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
 
     // Response message carrying order details.
     public static final class OrderResponse implements CborSerializable {
-        public final String orderId;
-        public final int userId;
+        public final String order_id;
+        public final int user_id;
         public final List<OrderItem> items;
-        public final int totalPrice;
+        public final int total_price;
         public final String status;
         public OrderResponse(String orderId, int userId, List<OrderItem> items, int totalPrice, String status) {
-            this.orderId = orderId;
-            this.userId = userId;
+            this.order_id = orderId;
+            this.user_id = userId;
             this.items = items;
-            this.totalPrice = totalPrice;
+            this.total_price = totalPrice;
             this.status = status;
         }
     }

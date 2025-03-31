@@ -193,10 +193,16 @@ public class Main {
                                         
                                         // Set response headers
                                         req.getResponseHeaders().set("Content-Type", "application/json");
-                                        req.sendResponseHeaders(200, jsonResponse.getBytes().length);
-
+                                        if(r.success){
+                                            String orderResponse = objectMapper.writeValueAsString(r.orderResponse);
+                                        req.sendResponseHeaders(200, orderResponse.getBytes().length);
                                         // Send response
+                                        os.write(orderResponse.getBytes());
+                                        }
+                                        else{
+                                            req.sendResponseHeaders(400, -1);
                                         os.write(jsonResponse.getBytes());
+                                        }    
                                     } catch (IOException e) {
                                         System.err.println("Error writing response: " + e.getMessage());
                                         e.printStackTrace();

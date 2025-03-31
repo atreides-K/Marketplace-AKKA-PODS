@@ -395,7 +395,7 @@ private Behavior<Command> onDiscountUpdated(DiscountUpdated msg) {
         // getContext().getSelf().tell(new OrderProcessingComplete(true, "Order created successfully")); dont think this is req coz we are handlin success reponse here and is causing some prob because we kill PostOrder actor at the end
         // Save the order details in the final response.
         getContext().getLog().info("Order created with details: OrderId: {}, UserId: {}, TotalPrice: {}, Status: {}",
-                orderResp.orderId, orderResp.userId, orderResp.totalPrice, orderResp.status);
+                orderResp.order_id, orderResp.user_id, orderResp.total_price, orderResp.status);
         // Reply with full order details.
         pendingReplyTo.tell(new PostOrderResponse(true, "Order created successfully", orderResp));
         return Behaviors.stopped();//kill PostOrder actor

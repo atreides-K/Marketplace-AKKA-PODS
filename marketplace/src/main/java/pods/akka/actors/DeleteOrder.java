@@ -137,7 +137,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         
         // Send a GetOrder message to check if the order exists.
         ActorRef<OrderActor.OrderResponse> adapter = getContext().messageAdapter(OrderActor.OrderResponse.class, orderResp -> {
-            if (orderResp.orderId == "0" || "NotInitialized".equals(orderResp.status)) {
+            if (orderResp.order_id == "0" || "NotInitialized".equals(orderResp.status)) {
                 return new OrderNotFound();
             } else {
                 return new OrderFound(orderResp);
@@ -185,7 +185,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     private Behavior<Command> onOrderDetailsReceived(OrderDetailsReceived msg) {
         OrderActor.OrderResponse details = msg.orderDetails;
         // For deletion, we need the total price and the list of items.
-        int totalPrice = details.totalPrice;
+        int totalPrice = details.total_price;
         // Step 6: Restock each product in the order.
         for (OrderActor.OrderItem item : details.items) {
             EntityRef<ProductActor.Command> productEntity =
@@ -195,7 +195,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         getContext().getLog().info("Restocked products for order {}", orderId);
         // Step 7: Credit the wallet with the total price.
         String creditJson = "{\"action\": \"credit\", \"amount\": " + totalPrice + "}";
-        userId = details.userId; // Get userId from order details
+        userId = details.user_id; // Get userId from order details
         getContext().getLog().info("Crediting wallet for user {} with amount {}", userId, totalPrice);
         HttpRequest creditRequest = HttpRequest.newBuilder()
                 .uri(URI.create("http://localhost:8082/wallets/" + userId))
