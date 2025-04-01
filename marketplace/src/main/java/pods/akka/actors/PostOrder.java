@@ -61,6 +61,16 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
     }
 
+    // Message for stock check response from a ProductActor.
+    private static final class StockChecked implements Command {
+        public final int productId;
+        public final ProductActor.StockCheckResponse response;
+        public StockChecked(int productId, ProductActor.StockCheckResponse response) {
+        this.productId = productId;
+        this.response = response;
+        }
+    }
+
     // Message carrying the response from product deduction.
     private static final class DeductionResponse implements Command {
         public final int product_id;
@@ -140,6 +150,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     private List<OrderActor.SimpleOrderItem> items;
     private ActorRef<PostOrderResponse> pendingReplyTo;
     private boolean discountAvailable;
+    private int pendingCheckResponses;
+    private boolean checkFailed;
     private int pendingDeductionResponses;
     private int totalPriceFromProducts;
     private boolean deductionFailed;
@@ -164,6 +176,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 .onMessage(StartOrder.class, this::onStartOrder)
                 .onMessage(UserValidated.class, this::onUserValidated)
                 .onMessage(UserValidationFailed.class, this::onUserValidationFailed)
+                .onMessage(StockChecked.class, this::onStockChecked)
                 .onMessage(DeductionResponse.class, this::onDeductionResponse)
                 .onMessage(WalletCheckResult.class, this::onWalletCheckResult)
                 .onMessage(WalletDebitResult.class, this::onWalletDebitResult)
@@ -212,28 +225,62 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     private Behavior<Command> onUserValidated(UserValidated msg) {
         discountAvailable = msg.discountAvailable;
         getContext().getLog().info("User validated. Discount available: {}", discountAvailable);
-        // Step 2: For each product in the order, send a deduction message.
-        pendingDeductionResponses = items.size();
+        // Initialize the counter for stock checks
+        pendingCheckResponses = items.size();
+        checkFailed = false;
+        // Phase 1: Check stock for each order item.
         for (OrderActor.SimpleOrderItem item : items) {
-            int prodId = item.product_id;
-            int qty = item.quantity;
-            
-            EntityRef<ProductActor.Command> productEntity = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
-            // Create a message adapter to convert the OperationResponse to a DeductionResponse.
-            ActorRef<ProductActor.OperationResponse> adapter = getContext().messageAdapter(ProductActor.OperationResponse.class,
-                    response -> new DeductionResponse(prodId, response));
-            productEntity.tell(new ProductActor.DeductStock(qty, adapter));
+          int prodId = item.product_id;
+          int qty = item.quantity;
+          EntityRef<ProductActor.Command> productEntity =
+              sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(prodId));
+          ActorRef<ProductActor.StockCheckResponse> adapter = getContext().messageAdapter(ProductActor.StockCheckResponse.class,
+              response -> new StockChecked(prodId, response));
+          productEntity.tell(new ProductActor.CheckStock(qty, adapter));
+        }
+        return this;
+      }
+    
+      private Behavior<Command> onUserValidationFailed(UserValidationFailed msg) {
+        getContext().getLog().error("User validation failed: {}", msg.errorMessage);
+        getContext().getSelf().tell(new OrderProcessingComplete(false, msg.errorMessage));
+        return this;
+      }
+    
+      // Phase 2: Handle stock check responses.
+      // Phase 1: Stock check response handler
+    private Behavior<Command> onStockChecked(StockChecked msg) {
+        pendingCheckResponses--;
+        if (!msg.response.sufficient) {
+            checkFailed = true;
+            getContext().getLog().error("Stock check failed for product {}: insufficient stock", msg.productId);
+        }
+        // When all stock checks are received:
+        if (pendingCheckResponses == 0) {
+            if (checkFailed) {
+                // One or more products do not have sufficient stock – fail order.
+                getContext().getSelf().tell(new OrderProcessingComplete(false, "Insufficient stock for one or more products"));
+            } else {
+                // All products have sufficient stock; proceed to actual deduction.
+                pendingDeductionResponses = items.size();
+                totalPriceFromProducts = 0;
+                deductionFailed = false;
+                for (OrderActor.SimpleOrderItem item : items) {
+                    int prodId = item.product_id;
+                    int qty = item.quantity;
+                    EntityRef<ProductActor.Command> productEntity =
+                        sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(prodId));
+                    ActorRef<ProductActor.OperationResponse> adapter =
+                        getContext().messageAdapter(ProductActor.OperationResponse.class,
+                            response -> new DeductionResponse(prodId, response));
+                    productEntity.tell(new ProductActor.DeductStock(qty, adapter));
+                }
+            }
         }
         return this;
     }
 
-    private Behavior<Command> onUserValidationFailed(UserValidationFailed msg) {
-        getContext().getLog().error("User validation failed: {}", msg.errorMessage);
-        getContext().getSelf().tell(new OrderProcessingComplete(false, msg.errorMessage));
-        return this;
-    }
-
-    // Step 3: Handle each product deduction response.
+    // Phase 2: Deduction response handler
     private Behavior<Command> onDeductionResponse(DeductionResponse msg) {
         pendingDeductionResponses--;
         if (!msg.response.success) {
@@ -244,37 +291,30 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
         if (pendingDeductionResponses == 0) {
             if (deductionFailed) {
-                // Rollback: Restock products for each order item.
-                for (OrderActor.SimpleOrderItem item : items) {
-                    //ActorRef<ProductActor.Command> productActor = ProductRegistry.getProductActor(item.product_id);
-                    EntityRef<ProductActor.Command> productEntity = sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
-                    productEntity.tell(new ProductActor.AddStock(item.quantity));
-                }
+                // This branch should ideally not occur since we already checked stock,
+                // but if it does, fail the order.
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Product stock deduction failed"));
             } else {
-                // All product deductions succeeded. Apply discount if available.
-                int finalPrice = discountAvailable ? (int) (totalPriceFromProducts * 0.9) : totalPriceFromProducts;
-                totalPriceFromProducts = finalPrice;
-                getContext().getLog().info("Product deductions succeeded. Total price after discount (if any): {}", totalPriceFromProducts);
-                // Step 4: Check wallet balance.
+                // Proceed with wallet check...
                 HttpRequest walletCheckRequest = HttpRequest.newBuilder()
-                        .uri(URI.create("http://localhost:8082/wallets/" + userId))
-                        .timeout(Duration.ofSeconds(5))
-                        .GET()
-                        .build();
+                    .uri(URI.create("http://localhost:8082/wallets/" + userId))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
                 httpClient.sendAsync(walletCheckRequest, BodyHandlers.ofString())
-                        .whenComplete((resp, ex) -> {
-                            if (ex != null || resp.statusCode() != 200) {
-                                getContext().getSelf().tell(new WalletCheckResult(false, 0, "Wallet service error"));
-                            } else {
-                                int balance = parseWalletBalance(resp.body());
-                                getContext().getSelf().tell(new WalletCheckResult(true, balance, ""));
-                            }
-                        });
+                    .whenComplete((resp, ex) -> {
+                        if (ex != null || resp.statusCode() != 200) {
+                            getContext().getSelf().tell(new WalletCheckResult(false, 0, "Wallet service error"));
+                        } else {
+                            int balance = parseWalletBalance(resp.body());
+                            getContext().getSelf().tell(new WalletCheckResult(true, balance, ""));
+                        }
+                    });
             }
         }
         return this;
     }
+
 
     // Add a flag to the PostOrder actor's state:
     private boolean rolledBack = false;

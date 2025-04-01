@@ -1,6 +1,7 @@
 package pods.akka.actors;
 
 import akka.actor.typed.Behavior;
+import akka.actor.typed.ActorRef;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
@@ -82,6 +83,22 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         }
     }
 
+    public static final class CheckStock implements Command {
+        public final int quantity;
+        public final ActorRef<StockCheckResponse> replyTo;
+        public CheckStock(int quantity, ActorRef<StockCheckResponse> replyTo) {
+            this.quantity = quantity;
+            this.replyTo = replyTo;
+        }
+      }
+      
+      public static final class StockCheckResponse implements CborSerializable {
+        public final boolean sufficient;
+        public StockCheckResponse(boolean sufficient) {
+            this.sufficient = sufficient;
+        }
+      }      
+
     // Product state
     private String productId = "unknown";
     private String name = "unknown";
@@ -109,6 +126,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
                 .onMessage(GetProduct.class, this::onGetProduct)
                 .onMessage(DeductStock.class, this::onDeductStock)
                 .onMessage(AddStock.class, this::onAddStock)
+                .onMessage(CheckStock.class, this::onCheckStock)
                 .build();
     }
 
@@ -150,6 +168,15 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         getContext().getLog().info("Received AddStock request for {}: Quantity: {}", productId, msg.quantity);
         stockQuantity += msg.quantity;
         getContext().getLog().info("Stock added for {}. New Stock: {}", productId, stockQuantity);
+        return this;
+    }
+
+    private Behavior<Command> onCheckStock(CheckStock msg) {
+        // Do not change any stock here; just check.
+        boolean isSufficient = msg.quantity <= stockQuantity;
+        msg.replyTo.tell(new StockCheckResponse(isSufficient));
+        getContext().getLog().info("Checked stock for {}: requested {}, available {} => {}",
+            productId, msg.quantity, stockQuantity, isSufficient);
         return this;
     }
 }
