@@ -24,15 +24,15 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     public static final class InitializeOrder implements Command {
         public final int orderId;
         public final int userId;
-        public final List<SimpleOrderItem> simpleItems;
+        public final List<OrderItem> items;
         public final int totalPrice;
         public final String initialStatus;
         public final ActorRef<OperationResponse> replyTo;
 
-        public InitializeOrder(int orderId, int userId, List<SimpleOrderItem> simpleItems, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
+        public InitializeOrder(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
             this.orderId = orderId;
             this.userId = userId;
-            this.simpleItems = simpleItems;
+            this.items = items;
             this.totalPrice = totalPrice;
             this.initialStatus = initialStatus;
             this.replyTo = replyTo;
@@ -88,27 +88,15 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
         }
     }  
 
-    // This is the simple type that represents the incoming order item (from the request)
-    public static final class SimpleOrderItem implements CborSerializable {
+    // A simple representation of an order item.
+    public static final class OrderItem implements CborSerializable {
         public final int product_id;
         public final int quantity;
-        public SimpleOrderItem() { // default constructor for JSON deserialization
+        public OrderItem() {
             this.product_id = 0;
             this.quantity = 0;
         }
-        public SimpleOrderItem(int product_id, int quantity) {
-            this.product_id = product_id;
-            this.quantity = quantity;
-        }
-    }
-
-    // A simple representation of an order item.
-    public static final class OrderItem implements CborSerializable {
-        public final int id;         // auto-generated unique id for the order item
-        public final int product_id;
-        public final int quantity;
-        public OrderItem(int id, int order_id, int product_id, int quantity) {
-            this.id = id;
+        public OrderItem(int product_id, int quantity) {
             this.product_id = product_id;
             this.quantity = quantity;
         }
@@ -150,12 +138,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
             this.orderId = msg.orderId;
             this.userId = msg.userId;
             // Transform the simple items:
-            this.items = msg.simpleItems.stream()
-                    .map(simple -> new OrderItem(orderItemIdCounter.getAndIncrement(), 
-                                                 msg.orderId, 
-                                                 simple.product_id, 
-                                                 simple.quantity))
-                    .collect(Collectors.toList());
+            this.items = msg.items;
             this.totalPrice = msg.totalPrice;
             this.status = msg.initialStatus;
             this.initialized = true;

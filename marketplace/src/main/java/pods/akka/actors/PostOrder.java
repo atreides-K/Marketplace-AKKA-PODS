@@ -29,9 +29,9 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     public static final class StartOrder implements Command {
         // public final int orderId;
         public final int userId;
-        public final List<OrderActor.SimpleOrderItem> items;
+        public final List<OrderActor.OrderItem> items;
         public final ActorRef<PostOrderResponse> replyTo;
-        public StartOrder(int userId, List<OrderActor.SimpleOrderItem> items, ActorRef<PostOrderResponse> replyTo) {
+        public StartOrder(int userId, List<OrderActor.OrderItem> items, ActorRef<PostOrderResponse> replyTo) {
             // this.orderId = orderId;
             this.userId = userId;
             this.items = items;
@@ -147,7 +147,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     // State variables.
     private int orderId;
     private int userId;
-    private List<OrderActor.SimpleOrderItem> items;
+    private List<OrderActor.OrderItem> items;
     private ActorRef<PostOrderResponse> pendingReplyTo;
     private boolean discountAvailable;
     private int pendingCheckResponses;
@@ -229,7 +229,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         pendingCheckResponses = items.size();
         checkFailed = false;
         // Phase 1: Check stock for each order item.
-        for (OrderActor.SimpleOrderItem item : items) {
+        for (OrderActor.OrderItem item : items) {
           int prodId = item.product_id;
           int qty = item.quantity;
           EntityRef<ProductActor.Command> productEntity =
@@ -265,7 +265,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 pendingDeductionResponses = items.size();
                 totalPriceFromProducts = 0;
                 deductionFailed = false;
-                for (OrderActor.SimpleOrderItem item : items) {
+                for (OrderActor.OrderItem item : items) {
                     int prodId = item.product_id;
                     int qty = item.quantity;
                     EntityRef<ProductActor.Command> productEntity =
@@ -452,7 +452,7 @@ private Behavior<Command> onDiscountUpdated(DiscountUpdated msg) {
     // Helper method to perform product stock rollback.
     private void rollbackProductStock() {
         if (!rolledBack) {
-            for (OrderActor.SimpleOrderItem item : items) {
+            for (OrderActor.OrderItem item : items) {
                 EntityRef<ProductActor.Command> productEntity =
                     sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
                 productEntity.tell(new ProductActor.AddStock(item.quantity));

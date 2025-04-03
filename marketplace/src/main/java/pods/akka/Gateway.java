@@ -53,14 +53,14 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 
     public static final class PostOrderReq implements Command {
         public final int user_id;
-        public final List<OrderActor.SimpleOrderItem> items;
+        public final List<OrderActor.OrderItem> items;
         public final ActorRef<PostOrder.PostOrderResponse> replyTo;
         public PostOrderReq() {
             this.user_id = 0;
             this.items = null;
             this.replyTo = null;
         }
-        public PostOrderReq(int user_id, List<OrderActor.SimpleOrderItem> items, ActorRef<PostOrder.PostOrderResponse> replyTo) {
+        public PostOrderReq(int user_id, List<OrderActor.OrderItem> items, ActorRef<PostOrder.PostOrderResponse> replyTo) {
             this.user_id = user_id;
             this.items = items;
             this.replyTo = replyTo;
