@@ -18,13 +18,13 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     // Message to InitializeProduct the product state with an added "name" field.
     public static final class InitializeProduct implements Command {
-        public final String productId;
+        public final int productId;
         public final String name;
         public final String description;
         public final int price;
         public final int stockQuantity;
         public InitializeProduct(String productId, String name, String description, int price, int stockQuantity) {
-            this.productId = productId;
+            this.productId = Integer.valueOf(productId);
             this.name = name;
             this.description = description;
             this.price = price;
@@ -58,12 +58,12 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     // Reply messages
     public static final class ProductResponse {
-        public final String id;
+        public final int id;
         public final String name;
         public final String description;
         public final int price;
         public final int stock_quantity;
-        public ProductResponse(String id, String name, String description, int price, int availableStock) {
+        public ProductResponse(int id, String name, String description, int price, int availableStock) {
             this.id = id;
             this.name = name;
             this.description = description;
@@ -100,7 +100,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
       }      
 
     // Product state
-    private String productId = "unknown";
+    private int productId = 0;
     private String name = "unknown";
     private String description = "unknown";
     private int price = -1;
@@ -115,7 +115,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     private ProductActor(ActorContext<Command> context, String productId) {
         super(context);
-        this.productId = productId;
+        this.productId = Integer.valueOf(productId);
         getContext().getLog().info("ProductActor created for ID: {}", productId);
     }
 
