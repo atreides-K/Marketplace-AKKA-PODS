@@ -295,6 +295,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 // but if it does, fail the order.
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Product stock deduction failed"));
             } else {
+                int finalPrice = discountAvailable ? (int)(totalPriceFromProducts * 0.9) : totalPriceFromProducts;
+                totalPriceFromProducts = finalPrice;
                 // Proceed with wallet check...
                 HttpRequest walletCheckRequest = HttpRequest.newBuilder()
                     .uri(URI.create("http://localhost:8082/wallets/" + userId))
