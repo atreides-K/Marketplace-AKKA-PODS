@@ -74,9 +74,11 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     // Message carrying the response from product deduction.
     private static final class DeductionResponse implements Command {
         public final int product_id;
+        public final int quantity; // the quantity attempted
         public final ProductActor.OperationResponse response;
-        public DeductionResponse(int product_id, ProductActor.OperationResponse response) {
+        public DeductionResponse(int product_id, int quantity, ProductActor.OperationResponse response) {
             this.product_id = product_id;
+            this.quantity = quantity;
             this.response = response;
         }
     }
@@ -158,6 +160,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
     private final HttpClient httpClient;
     private final ClusterSharding sharding;
+
+    private final java.util.Map<Integer, Integer> deductedQuantities = new java.util.HashMap<>();
 
     // Factory method.
     public static Behavior<Command> create() {
@@ -261,7 +265,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 // One or more products do not have sufficient stock – fail order.
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Insufficient stock for one or more products"));
             } else {
-                // All products have sufficient stock; proceed to actual deduction.
+                // After check phase passes:
                 pendingDeductionResponses = items.size();
                 totalPriceFromProducts = 0;
                 deductionFailed = false;
@@ -272,13 +276,14 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                         sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(prodId));
                     ActorRef<ProductActor.OperationResponse> adapter =
                         getContext().messageAdapter(ProductActor.OperationResponse.class,
-                            response -> new DeductionResponse(prodId, response));
+                            response -> new DeductionResponse(prodId, qty, response));
                     productEntity.tell(new ProductActor.DeductStock(qty, adapter));
+                    }
+
                 }
             }
+            return this;
         }
-        return this;
-    }
 
     // Phase 2: Deduction response handler
     private Behavior<Command> onDeductionResponse(DeductionResponse msg) {
@@ -288,15 +293,26 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             getContext().getLog().error("Deduction failed for product {}: {}", msg.product_id, msg.response.message);
         } else {
             totalPriceFromProducts += msg.response.priceDeducted;
+            // Record the deducted quantity for this product
+            deductedQuantities.merge(msg.product_id, msg.quantity, Integer::sum);
         }
         if (pendingDeductionResponses == 0) {
             if (deductionFailed) {
-                // This branch should ideally not occur since we already checked stock,
-                // but if it does, fail the order.
+                // Rollback only the products that were deducted.
+                for (java.util.Map.Entry<Integer, Integer> entry : deductedQuantities.entrySet()) {
+                    int prodId = entry.getKey();
+                    int deductedQty = entry.getValue();
+                    EntityRef<ProductActor.Command> productEntity =
+                        sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(prodId));
+                    productEntity.tell(new ProductActor.AddStock(deductedQty));
+                    getContext().getLog().info("Rolled back {} units for product {}", deductedQty, prodId);
+                }
                 getContext().getSelf().tell(new OrderProcessingComplete(false, "Product stock deduction failed"));
             } else {
+                // If no deduction failures, then apply discount if available.
                 int finalPrice = discountAvailable ? (int)(totalPriceFromProducts * 0.9) : totalPriceFromProducts;
                 totalPriceFromProducts = finalPrice;
+                getContext().getLog().info("Final total price after discount (if any): {}", totalPriceFromProducts);
                 // Proceed with wallet check...
                 HttpRequest walletCheckRequest = HttpRequest.newBuilder()
                     .uri(URI.create("http://localhost:8082/wallets/" + userId))
@@ -316,6 +332,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
         return this;
     }
+
 
 
     // Add a flag to the PostOrder actor's state:

@@ -174,8 +174,8 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
       }
       private Behavior<Command> onPostOrderReq(PostOrderReq req) {
         
-        ActorRef<PostOrder.Command> postOrderWorker = 
-            getContext().spawn(PostOrder.create(), "PostOrderWorker-" + responseNum++);
+        ActorRef<PostOrder.Command> postOrderWorker = getContext().spawnAnonymous(PostOrder.create());
+
         
         postOrderWorker.tell(new PostOrder.StartOrder(req.user_id,req.items,req.replyTo));
         // productEntity.tell(new ProductActor.GetProduct(req.replyTo));
@@ -198,8 +198,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 
     private Behavior<Command> onDeleteOrderReq(DeleteOrderReq req) {
         // Spawn a DeleteOrder actor to process this request.
-        ActorRef<DeleteOrder.Command> deleteOrderWorker =
-            getContext().spawn(DeleteOrder.create(), "DeleteOrderWorker-" + System.currentTimeMillis());
+        ActorRef<DeleteOrder.Command> deleteOrderWorker = getContext().spawnAnonymous(DeleteOrder.create());
         deleteOrderWorker.tell(new DeleteOrder.StartDelete(req.order_id, req.replyTo));
         return this;
     }
