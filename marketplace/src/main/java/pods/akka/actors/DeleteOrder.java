@@ -198,7 +198,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         userId = details.user_id; // Get userId from order details
         getContext().getLog().info("Crediting wallet for user {} with amount {}", userId, totalPrice);
         HttpRequest creditRequest = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:8082/wallets/" + userId))
+                .uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
                 .timeout(Duration.ofSeconds(5))
                 .header("Content-Type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(creditJson))

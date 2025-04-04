@@ -205,7 +205,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         getContext().getLog().info("Starting order processing for and userId {}", userId);
 
         HttpRequest userRequest = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:8080/users/" + userId))
+                .uri(URI.create("http://host.docker.internal:8080/users/" + userId))
                 .timeout(Duration.ofSeconds(5))
                 .GET()
                 .build();
@@ -315,7 +315,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 getContext().getLog().info("Final total price after discount (if any): {}", totalPriceFromProducts);
                 // Proceed with wallet check...
                 HttpRequest walletCheckRequest = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:8082/wallets/" + userId))
+                    .uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
                     .timeout(Duration.ofSeconds(5))
                     .GET()
                     .build();
@@ -353,7 +353,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 // Step 6: Debit the wallet.
                 String debitJson = "{\"action\": \"debit\", \"amount\": " + totalPriceFromProducts + "}";
                 HttpRequest debitRequest = HttpRequest.newBuilder()
-                        .uri(URI.create("http://localhost:8082/wallets/" + userId))
+                        .uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
                         .timeout(Duration.ofSeconds(5))
                         .header("Content-Type", "application/json")
                         .PUT(HttpRequest.BodyPublishers.ofString(debitJson))
@@ -387,7 +387,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             // Step 8: Update discount status.
             String discountJson = "{\"id\": " + userId + ", \"discount_availed\": true}";
             HttpRequest discountRequest = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:8080/users/" + userId + "/discount"))
+                    .uri(URI.create("http://host.docker.internal:8080/users/" + userId + "/discount"))
                     .timeout(Duration.ofSeconds(5))
                     .header("Content-Type", "application/json")
                     .PUT(HttpRequest.BodyPublishers.ofString(discountJson))
