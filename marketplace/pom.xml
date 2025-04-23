@@ -7,97 +7,145 @@
     <groupId>pods.akka</groupId>
     <artifactId>marketplace</artifactId>
     <version>1.0-SNAPSHOT</version>
-    
-  <dependencies>
-    <!-- Akka Dependencies -->
-    <dependency>
-      <groupId>com.typesafe.akka</groupId>
-      <artifactId>akka-actor-typed_2.13</artifactId>
-      <version>2.8.0</version>
-    </dependency>
-    <dependency>
-      <groupId>com.typesafe.akka</groupId>
-      <artifactId>akka-stream_2.13</artifactId>
-      <version>2.8.0</version>
-    </dependency>
-    <!-- cluster -->
-    <dependency>
-        <groupId>com.typesafe.akka</groupId>
-        <artifactId>akka-cluster-typed_2.13</artifactId>
-        <version>2.8.0</version>
-    </dependency>
-    <dependency>
-        <groupId>com.typesafe.akka</groupId>
-        <artifactId>akka-cluster-sharding-typed_2.13</artifactId>
-        <version>2.8.0</version>
-    </dependency>
 
-    <!-- SLF4J API -->
-    <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-api</artifactId>
-      <version>2.0.12</version>
-    </dependency>
-
-    <!-- Logback for SLF4J Implementation -->
-    <dependency>
-      <groupId>ch.qos.logback</groupId>
-      <artifactId>logback-classic</artifactId>
-      <version>1.4.12</version>
-    </dependency>
-  <!-- Cbor -->
-    <dependency>
-      <groupId>com.typesafe.akka</groupId>
-      <artifactId>akka-serialization-jackson_2.13</artifactId>
-      <version>${akka.version}</version>
-    </dependency>
-
-    <!-- JUnit for Testing -->
-    <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter-api</artifactId>
-      <version>5.8.1</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-    	<groupId>com.sun.net.httpserver</groupId>
-    	<artifactId>http</artifactId>
-    	<version>20070405</version>
-    </dependency>
-    <!-- https://mvnrepository.com/artifact/javax.annotation/javax.annotation-api -->
-	<!-- https://mvnrepository.com/artifact/jakarta.annotation/jakarta.annotation-api -->
-    <dependency>
-    <groupId>jakarta.annotation</groupId>
-    <artifactId>jakarta.annotation-api</artifactId>
-    <version>3.0.0</version>
-</dependency>
-    
-  </dependencies>
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
-        <akka.version>2.8.0</akka.version>
+        <akka.version>2.8.0</akka.version> <!-- Using Akka 2.8.0 -->
+        <scala.binary.version>2.13</scala.binary.version>
+        <slf4j.version>2.0.12</slf4j.version>
+        <logback.version>1.4.12</logback.version>
+        <junit.version>5.8.1</junit.version>
+        <maven.compiler.plugin.version>3.11.0</maven.compiler.plugin.version>
+        <exec.maven.plugin.version>3.2.0</exec.maven.plugin.version>
+        <jakarta.annotation.api.version>2.1.1</jakarta.annotation.api.version> <!-- Updated Jakarta version -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
+
+    <dependencies>
+        <!-- Akka Dependencies -->
+        <dependency>
+            <groupId>com.typesafe.akka</groupId>
+            <artifactId>akka-actor-typed_${scala.binary.version}</artifactId>
+            <version>${akka.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.typesafe.akka</groupId>
+            <artifactId>akka-stream_${scala.binary.version}</artifactId>
+            <version>${akka.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.typesafe.akka</groupId>
+            <artifactId>akka-cluster-typed_${scala.binary.version}</artifactId>
+            <version>${akka.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.typesafe.akka</groupId>
+            <artifactId>akka-cluster-sharding-typed_${scala.binary.version}</artifactId>
+            <version>${akka.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.typesafe.akka</groupId>
+            <artifactId>akka-serialization-jackson_${scala.binary.version}</artifactId>
+            <version>${akka.version}</version>
+        </dependency>
+        <!-- ** PHASE 2 CHANGE: Added SBR dependency required by application.conf ** -->
+        <dependency>
+            <groupId>com.typesafe.akka</groupId>
+            <artifactId>akka-cluster-tools_${scala.binary.version}</artifactId> <!-- SBR is often part of cluster-tools -->
+            <version>${akka.version}</version>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback.version}</version>
+        </dependency>
+
+        <!-- Used for HttpServer (Phase 1 style HTTP) -->
+        <dependency>
+            <groupId>com.sun.net.httpserver</groupId>
+            <artifactId>http</artifactId>
+            <version>20070405</version>
+        </dependency>
+
+        <!-- Annotations (often needed implicitly) -->
+        <dependency>
+            <groupId>jakarta.annotation</groupId>
+            <artifactId>jakarta.annotation-api</artifactId>
+            <version>${jakarta.annotation.api.version}</version>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.typesafe.akka</groupId>
+            <artifactId>akka-actor-testkit-typed_${scala.binary.version}</artifactId>
+            <version>${akka.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
     <build>
         <plugins>
             <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.2.0</version>
-                <configuration>
-                    <mainClass>pods.akka.Main</mainClass>  <!-- Replace with your actual main class -->
-                </configuration>
-            </plugin>
-              <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.11.0</version>
+                <version>${maven.compiler.plugin.version}</version>
                 <configuration>
-                    <source>17</source>
-                    <target>17</target>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                    <encoding>${project.build.sourceEncoding}</encoding>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>${exec.maven.plugin.version}</version>
+                <configuration>
+                    <!-- Configuration here often relates to running via 'mvn exec:exec' -->
+                    <!-- The 'mvn exec:java' goal needed for ENTRYPOINT doesn't need specific config here -->
+                    <mainClass>pods.akka.Main</mainClass>
+                </configuration>
+            </plugin>
+             <!-- Optional: Shade plugin if creating an uber-jar was desired (but not needed for mvn exec:java) -->
+            <!--
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>pods.akka.Main</mainClass>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>reference.conf</resource>
+                                </transformer>
+                            </transformers>
+                            <finalName>marketplace-service-uber</finalName>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            -->
         </plugins>
     </build>
-
 </project>
