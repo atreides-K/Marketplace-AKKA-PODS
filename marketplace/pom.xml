@@ -17,7 +17,7 @@
         <logback.version>1.4.12</logback.version>
         <junit.version>5.8.1</junit.version>
         <maven.compiler.plugin.version>3.11.0</maven.compiler.plugin.version>
-        <exec.maven.plugin.version>3.2.0</exec.maven.plugin.version>
+        <exec.maven.plugin.version>3.1.1</exec.maven.plugin.version>
         <jakarta.annotation.api.version>2.1.1</jakarta.annotation.api.version> <!-- Updated Jakarta version -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
@@ -95,6 +95,7 @@
             <version>${akka.version}</version>
             <scope>test</scope>
         </dependency>
+        
     </dependencies>
 
     <build>
@@ -119,6 +120,7 @@
                     <mainClass>pods.akka.Main</mainClass>
                 </configuration>
             </plugin>
+            
              <!-- Optional: Shade plugin if creating an uber-jar was desired (but not needed for mvn exec:java) -->
             <!--
             <plugin>

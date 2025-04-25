@@ -4,11 +4,13 @@ FROM maven:3.9.6-eclipse-temurin-17 AS build
 WORKDIR /app
 # Copy the Maven project file and download dependencies offline
 COPY pom.xml .
-RUN mvn dependency:go-offline --quiet
+# REMOVED --quiet to make output visible
+RUN mvn dependency:go-offline 
 # Copy the source code
 COPY src ./src
 # Build the project (skipping tests)
 # Ensure target directory is created
+# This command should already show INFO lines
 RUN mvn clean package -DskipTests
 
 # Final stage: run the application using mvn exec:java

@@ -1,33 +1,40 @@
 package pods.akka.actors;
 
 import akka.actor.typed.Behavior;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty; // <-- Import JsonProperty
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
-import akka.actor.typed.javadsl.Behaviors; // Correct import
+import akka.actor.typed.javadsl.Behaviors;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import pods.akka.CborSerializable;
+import org.slf4j.Logger; // Using SLF4J Logger
 
 public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
-    // Define message protocol for ProductActor
-    public interface Command extends CborSerializable {} // Commands are serializable
+    // Define message protocol
+    public interface Command extends CborSerializable {}
 
     public static final EntityTypeKey<Command> TypeKey =
-        EntityTypeKey.create(Command.class, "ProductEntity"); // Use Command interface
+        EntityTypeKey.create(Command.class, "ProductEntity");
 
-    // Message to Initialize the product state with an added "name" field.
+    // --- Commands ---
+
+    // InitializeProduct: Sent locally during startup usually, but good practice
     public static final class InitializeProduct implements Command {
         public final int productId;
         public final String name;
         public final String description;
         public final int price;
         public final int stockQuantity;
-        // Constructor accepts String ID as potentially coming from CSV/Sharding
+
+        // Note: No JsonCreator needed IF this message is guaranteed to only be created locally
+        // and sent via tell(). If it could potentially be serialized (e.g., for testing),
+        // adding annotations would be required. For now, assuming local creation.
         public InitializeProduct(String productId, String name, String description, int price, int stockQuantity) {
-            // Consider adding try-catch for parsing if productId format isn't guaranteed
-            this.productId = Integer.parseInt(productId);
+            this.productId = Integer.parseInt(productId); // Consider error handling
             this.name = name;
             this.description = description;
             this.price = price;
@@ -35,153 +42,189 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         }
     }
 
+    // GetProduct: Used in AskPattern, definitely needs annotations
     public static final class GetProduct implements Command {
-        public final ActorRef<ProductResponse> replyTo; // Use ActorRef from Akka Typed
-        public GetProduct(ActorRef<ProductResponse> replyTo) {
+        public final ActorRef<ProductResponse> replyTo;
+
+        @JsonCreator // Annotation for Jackson
+        public GetProduct(
+                @JsonProperty("replyTo") ActorRef<ProductResponse> replyTo // Annotation for Jackson parameter
+        ) {
             this.replyTo = replyTo;
         }
     }
 
+    // DeductStock: Used in AskPattern
     public static final class DeductStock implements Command {
         public final int quantity;
         public final ActorRef<OperationResponse> replyTo;
-        public DeductStock(int quantity, ActorRef<OperationResponse> replyTo) {
+
+        @JsonCreator
+        public DeductStock(
+                @JsonProperty("quantity") int quantity,
+                @JsonProperty("replyTo") ActorRef<OperationResponse> replyTo
+        ) {
             this.quantity = quantity;
             this.replyTo = replyTo;
         }
     }
 
+    // AddStock: Typically sent via tell, might not strictly need annotations
+    // Adding them for safety/consistency if serialization possibility exists
     public static final class AddStock implements Command {
         public final int quantity;
-        public AddStock(int quantity) {
+
+        @JsonCreator
+        public AddStock(@JsonProperty("quantity") int quantity) {
             this.quantity = quantity;
         }
     }
 
+    // CheckStock: Used in AskPattern
     public static final class CheckStock implements Command {
         public final int quantity;
         public final ActorRef<StockCheckResponse> replyTo;
-        public CheckStock(int quantity, ActorRef<StockCheckResponse> replyTo) {
+
+        @JsonCreator
+        public CheckStock(
+                @JsonProperty("quantity") int quantity,
+                @JsonProperty("replyTo") ActorRef<StockCheckResponse> replyTo
+        ) {
             this.quantity = quantity;
             this.replyTo = replyTo;
         }
     }
 
-    // Reply messages
-    // PHASE 2 CHANGE: Added CborSerializable for network transfer
+    // --- Replies ---
+
+    // ProductResponse: Sent as reply in AskPattern
     public static final class ProductResponse implements CborSerializable {
         public final int id;
         public final String name;
         public final String description;
         public final int price;
         public final int stock_quantity;
-        // Constructor matching GetProduct reply
-        public ProductResponse(int id, String name, String description, int price, int availableStock) {
+
+        @JsonCreator
+        public ProductResponse(
+                @JsonProperty("id") int id,
+                @JsonProperty("name") String name,
+                @JsonProperty("description") String description,
+                @JsonProperty("price") int price,
+                @JsonProperty("stock_quantity") int availableStock
+        ) {
             this.id = id;
             this.name = name;
             this.description = description;
             this.price = price;
             this.stock_quantity = availableStock;
         }
-        // Default constructor for Jackson (if needed, though often inferred)
-        public ProductResponse() {
-            this.id = 0; this.name = ""; this.description = ""; this.price = -1; this.stock_quantity = 0;
-        }
+        // Default constructor not needed when using @JsonCreator on the parameterized one
+        // public ProductResponse() { ... }
     }
 
-    // PHASE 2 CHANGE: Added CborSerializable for network transfer
+    // OperationResponse: Sent as reply in AskPattern
     public static final class OperationResponse implements CborSerializable {
         public final boolean success;
         public final String message;
-        public final int priceDeducted;  // computed as quantity * price if deduction succeeds
-        public OperationResponse(boolean success, String message, int priceDeducted) {
+        public final int priceDeducted;
+
+        @JsonCreator
+        public OperationResponse(
+                @JsonProperty("success") boolean success,
+                @JsonProperty("message") String message,
+                @JsonProperty("priceDeducted") int priceDeducted
+        ) {
             this.success = success;
             this.message = message;
             this.priceDeducted = priceDeducted;
         }
-         // Default constructor for Jackson (if needed)
-        public OperationResponse() {
-            this.success = false; this.message = ""; this.priceDeducted = 0;
-        }
+         // Default constructor not needed when using @JsonCreator
+        // public OperationResponse() { ... }
     }
 
-    // StockCheckResponse needs to be serializable as it's sent back in Ask
+    // StockCheckResponse: Sent as reply in AskPattern
     public static final class StockCheckResponse implements CborSerializable {
         public final boolean sufficient;
-        public StockCheckResponse(boolean sufficient) {
+
+        @JsonCreator
+        public StockCheckResponse(@JsonProperty("sufficient") boolean sufficient) {
             this.sufficient = sufficient;
         }
-         // Default constructor for Jackson (if needed)
-        public StockCheckResponse() {
-            this.sufficient = false;
-        }
+         // Default constructor not needed when using @JsonCreator
+        // public StockCheckResponse() { ... }
     }
 
-    // Product state
-    private int productId; // Initialized from entityId via constructor
-    private String name = null; // Mark as uninitialized explicitly
+    // --- Actor State and Logic ---
+
+    private final Logger log; // Use SLF4J logger
+    private final int productId; // Final after constructor
+    private String name = null;
     private String description = null;
     private int price = -1;
-    private int stockQuantity = -1; // Use -1 to indicate not yet initialized
+    private int stockQuantity = -1;
     private boolean initialized = false;
 
     public static Behavior<Command> create(String entityId) {
-        // Pass entityId to constructor
         return Behaviors.setup(context -> new ProductActor(context, entityId));
     }
 
     private ProductActor(ActorContext<Command> context, String entityId) {
         super(context);
+        this.log = context.getLog(); // Get logger from context
         try {
-            // Initialize productId from the sharding entity ID
             this.productId = Integer.parseInt(entityId);
         } catch (NumberFormatException e) {
-            getContext().getLog().error("Invalid Product ID format for entityId: {}", entityId);
-            // Decide how to handle - stop, log, etc. Stopping might be safest.
-            throw e; // Rethrow to signal failure during setup
+            log.error("Invalid Product ID format for entityId: {}. Stopping actor.", entityId, e);
+            throw new IllegalArgumentException("Invalid Product ID format: " + entityId, e);
         }
-        getContext().getLog().info("ProductActor created for ID: {}", this.productId);
+        log.info("ProductActor created for ID: {}", this.productId);
     }
 
     @Override
     public Receive<Command> createReceive() {
-        // Initial behavior handles initialization first
-        return uninitialized();
+        
+        // Start in uninitialized state
+        if (!initialized) {
+            return uninitialized();
+        } else {
+            return initialized();
+        }
     }
 
     private Receive<Command> uninitialized() {
+        log.debug("Actor {} entering uninitialized state", productId); // Add log
         return newReceiveBuilder()
             .onMessage(InitializeProduct.class, this::onInitializeProduct)
             .onMessage(GetProduct.class, msg -> {
-                getContext().getLog().warn("ProductActor {} received GetProduct before initialization.", productId);
-                // Reply indicating not found/initialized (use specific fields or a dedicated message)
+                // log.warn("ProductActor {} received GetProduct before initialization.", productId); // LOG REMOVED
                 msg.replyTo.tell(new ProductResponse(productId, "Not Initialized", "", -1, -1));
                 return Behaviors.same();
             })
             .onMessage(CheckStock.class, msg -> {
-                 getContext().getLog().warn("ProductActor {} received CheckStock before initialization.", productId);
-                 msg.replyTo.tell(new StockCheckResponse(false)); // Cannot satisfy stock check
+                 // log.warn("ProductActor {} received CheckStock before initialization.", productId); // LOG REMOVED
+                 msg.replyTo.tell(new StockCheckResponse(false));
                  return Behaviors.same();
             })
              .onMessage(DeductStock.class, msg -> {
-                 getContext().getLog().warn("ProductActor {} received DeductStock before initialization.", productId);
+                 // log.warn("ProductActor {} received DeductStock before initialization.", productId); // LOG REMOVED
                  msg.replyTo.tell(new OperationResponse(false, "Product not initialized.", 0));
                  return Behaviors.same();
             })
              .onMessage(AddStock.class, msg -> {
-                 getContext().getLog().warn("ProductActor {} received AddStock before initialization. Ignoring.", productId);
-                 // No reply needed for AddStock
+                 // log.warn("ProductActor {} received AddStock before initialization. Ignoring.", productId); // LOG REMOVED
                  return Behaviors.same();
             })
             .build();
     }
 
      private Receive<Command> initialized() {
+        log.debug("Actor {} entering initialized state", productId); // Add log
         return newReceiveBuilder()
             .onMessage(InitializeProduct.class, msg -> {
-                // Allow re-initialization? Or log warning? Current replaces state.
-                getContext().getLog().warn("ProductActor {} received InitializeProduct again. Overwriting state.", productId);
-                return onInitializeProduct(msg); // Re-run initialization logic
+                // log.warn("ProductActor {} received InitializeProduct again. Overwriting state.", productId); // LOG REMOVED
+                // Re-run initialization logic and stay in initialized state
+                return onInitializeProduct(msg); 
             })
             .onMessage(GetProduct.class, this::onGetProduct)
             .onMessage(CheckStock.class, this::onCheckStock)
@@ -192,31 +235,33 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
 
     private Behavior<Command> onInitializeProduct(InitializeProduct msg) {
-        // Check if the message ID matches the actor's ID (sanity check)
         if (msg.productId != this.productId) {
-             getContext().getLog().error("InitializeProduct ID mismatch! Actor ID: {}, Message ID: {}. Ignoring.",
-                this.productId, msg.productId);
-             // Decide if this is an error or just needs logging
-             return Behaviors.same(); // Stay in current state (initialized or not)
+            // log.error("InitializeProduct ID mismatch! Actor ID: {}, Message ID: {}. Ignoring.", // LOG REMOVED
+            //    this.productId, msg.productId);
+             return Behaviors.same(); 
         }
 
         this.name = msg.name;
         this.description = msg.description;
         this.price = msg.price;
         this.stockQuantity = msg.stockQuantity;
-        this.initialized = true; // Mark as initialized
+        this.initialized = true; 
 
-        getContext().getLog().info("ProductActor {} Initialized: Name: {}, Price: {}, Stock: {}",
-                productId, name, price, stockQuantity);
+        // log.info("ProductActor {} Initialized: Name: {}, Price: {}, Stock: {}", // LOG REMOVED
+        //        productId, name, price, stockQuantity);
 
         // Transition to the initialized behavior
+        log.info("ProductActor {} Initialized [...]", productId); // Keep this
         return initialized();
     }
 
-    // Methods below are only called when in the 'initialized' state
-
     private Behavior<Command> onGetProduct(GetProduct msg) {
-        msg.replyTo.tell(new ProductResponse(productId, name, description, price, stockQuantity));
+        log.info("Actor {} handling GetProduct. Is Initialized: {}", productId, this.initialized); 
+        if (!initialized) { // Double-check state
+            msg.replyTo.tell(new ProductResponse(productId, "Not Initialized", "", -1, -1));
+       } else {
+            msg.replyTo.tell(new ProductResponse(productId, name, description, price, stockQuantity));
+       }
         return this;
     }
 
@@ -233,7 +278,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
             stockQuantity -= msg.quantity;
             int deductionAmount = msg.quantity * price;
             msg.replyTo.tell(new OperationResponse(true, "Stock deducted successfully.", deductionAmount));
-            getContext().getLog().info("Stock deducted for {}. Remaining: {}", productId, stockQuantity);
+            // log.info("Stock deducted for {}. Remaining: {}", productId, stockQuantity); // LOG REMOVED
         } else {
             msg.replyTo.tell(new OperationResponse(false, "Insufficient stock. Available: " + stockQuantity, 0));
         }
@@ -243,11 +288,10 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     private Behavior<Command> onAddStock(AddStock msg) {
         if (msg.quantity > 0) {
             stockQuantity += msg.quantity;
-            getContext().getLog().info("Stock added for {}. New Stock: {}", productId, stockQuantity);
+            // log.info("Stock added for {}. New Stock: {}", productId, stockQuantity); // LOG REMOVED
         } else {
-             getContext().getLog().warn("Attempted to add zero or negative stock ({}) for product {}. Ignoring.", msg.quantity, productId);
+             // log.warn("Attempted to add zero or negative stock ({}) for product {}. Ignoring.", msg.quantity, productId); // LOG REMOVED
         }
-        // AddStock doesn't have a replyTo
         return this;
     }
 }

@@ -38,10 +38,11 @@ def main():
     if r.status_code != 201:
         print("User creation failed")
         return
+    time.sleep(2.5)
     put_wallet(user_id, "credit", wallet_amount)
 
     # Place an order successfully
-    time.sleep(0.5)
+    time.sleep(2.5)
     order_payload = {"user_id": user_id, "items": [{"product_id": product_id, "quantity": order_quantity}]}
     order_response = post_order(user_id, order_payload["items"])
     if order_response.status_code != 201:
