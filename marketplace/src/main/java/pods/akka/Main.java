@@ -45,55 +45,44 @@ import java.util.function.Supplier;
 
 public class Main {
 
-    // --- Internal Message for Delayed Initialization ---
-    private enum RootCommand {
-        TRIGGER_INITIALIZATION
-    }
+    private enum RootCommand { TRIGGER_INITIALIZATION }
 
-    // Service Keys for Routers
-    public static final ServiceKey<PostOrder.Command> POST_ORDER_ROUTER_KEY =
-            ServiceKey.create(PostOrder.Command.class, "postOrderRouter");
-    public static final ServiceKey<DeleteOrder.Command> DELETE_ORDER_ROUTER_KEY =
-            ServiceKey.create(DeleteOrder.Command.class, "deleteOrderRouter");
+    public static final ServiceKey<PostOrder.Command> POST_ORDER_ROUTER_KEY = ServiceKey.create(PostOrder.Command.class, "postOrderRouter");
+    public static final ServiceKey<DeleteOrder.Command> DELETE_ORDER_ROUTER_KEY = ServiceKey.create(DeleteOrder.Command.class, "deleteOrderRouter");
 
-    // Configuration constants
     private static final int PRIMARY_HTTP_PORT = 8081;
-    private static final int PRIMARY_NODE_AKKA_PORT = 8083; // Base port
+    private static final int PRIMARY_NODE_AKKA_PORT = 8083;
     private static final int WORKER_POOL_SIZE = 50;
     private static final String PRODUCT_CSV_FILE = "products.csv";
-    private static final Duration INIT_DELAY = Duration.ofSeconds(5); // Delay before starting product init
-    // Partitioning constants
-    private static final int TOTAL_PARTITIONS = 10; // Total logical partitions for products
-    private static final int EXPECTED_NODE_COUNT = 3; // Expected number of nodes for initial distribution
+    private static final Duration INIT_DELAY = Duration.ofSeconds(5);
+    private static final int TOTAL_PARTITIONS = 10; // Needs careful tuning maybe
+    private static final int EXPECTED_NODE_COUNT = 3; // Needs to match actual deployment count ideally
 
-    // --- Root Actor Behavior ---
-    // Changed return type to Behavior<RootCommand> to handle internal message
     public static Behavior<RootCommand> createRootBehaviorTyped(int akkaPort) {
         return Behaviors.setup(context -> {
-            final Logger log = context.getLog();
+            final Logger log = context.getLog(); // Use SLF4J Logger
             log.info("Starting node with Akka port: {}", akkaPort);
 
             Cluster cluster = Cluster.get(context.getSystem());
             ClusterSharding sharding = ClusterSharding.get(context.getSystem());
-            log.info("Node {} joining cluster with seed node {}",
-                    cluster.selfMember().address(), ConfigFactory.load().getStringList("akka.cluster.seed-nodes"));
+            log.info("Node {} using seeds: {}", cluster.selfMember().address(), ConfigFactory.load().getStringList("akka.cluster.seed-nodes"));
 
             boolean isPrimaryNode = (akkaPort == PRIMARY_NODE_AKKA_PORT);
             log.info("Is Primary Node (port {} == {}): {}", akkaPort, PRIMARY_NODE_AKKA_PORT, isPrimaryNode);
 
             // Initialize Cluster Sharding (All Nodes)
-            // Added .withRole back for consistency with application.conf
-            sharding.init( Entity.of(OrderActor.TypeKey, (EntityContext<OrderActor.Command> ec) -> OrderActor.create(ec.getEntityId())));
-            sharding.init( Entity.of(ProductActor.TypeKey, (EntityContext<ProductActor.Command> ec) -> ProductActor.create(ec.getEntityId())));
+            // CORRECTED: Added .withRole back to match application.conf
+            sharding.init( Entity.of(OrderActor.TypeKey, (EntityContext<OrderActor.Command> ec) -> OrderActor.create(ec.getEntityId())).withRole("marketplace"));
+            sharding.init( Entity.of(ProductActor.TypeKey, (EntityContext<ProductActor.Command> ec) -> ProductActor.create(ec.getEntityId())).withRole("marketplace"));
             log.info("Cluster Sharding initialized for OrderActor and ProductActor with role 'marketplace'.");
 
             // Spawn Worker Actors and Register (All Nodes)
             spawnAndRegisterWorkers(context, PostOrder::create, POST_ORDER_ROUTER_KEY, WORKER_POOL_SIZE);
             spawnAndRegisterWorkers(context, DeleteOrder::create, DELETE_ORDER_ROUTER_KEY, WORKER_POOL_SIZE);
 
-            // --- DELAYED Partitioned Product Initialization (All Nodes) ---
+            // DELAYED Partitioned Product Initialization (All Nodes)
             log.info("Scheduling product initialization in {}...", INIT_DELAY);
-            context.scheduleOnce(INIT_DELAY, context.getSelf(), RootCommand.TRIGGER_INITIALIZATION); // Use context.getSelf()
+            context.scheduleOnce(INIT_DELAY, context.getSelf(), RootCommand.TRIGGER_INITIALIZATION);
 
             // Start HTTP Server and Gateway (Primary Node ONLY)
             if (isPrimaryNode) {
@@ -111,13 +100,11 @@ public class Main {
                  log.info("Secondary node {} initialized workers, sharding, and joined cluster.", akkaPort);
             }
 
-            // Return behavior that handles the TriggerInitialization message
             return Behaviors.receiveMessage(message -> {
                 if (message == RootCommand.TRIGGER_INITIALIZATION) {
                     log.info("Triggering product initialization now.");
-                    // Pass akkaPort to the initialization method
                     initializePartitionedProducts(context, sharding, cluster, akkaPort);
-                    return Behaviors.same(); // Keep handling other messages if any added later
+                    return Behaviors.same();
                 }
                 return Behaviors.unhandled();
             });
@@ -126,6 +113,7 @@ public class Main {
 
     // --- Helper Methods ---
 
+  
     private static <T extends CborSerializable> void spawnAndRegisterWorkers(
             ActorContext<?> context,
             Supplier<Behavior<T>> behaviorSupplier,
@@ -140,7 +128,6 @@ public class Main {
          log.info("Workers registered for service key {}", serviceKey.id());
     }
 
-    // --- NEW Partitioning Logic ---
     private static void initializePartitionedProducts(ActorContext<?> context, ClusterSharding sharding, Cluster cluster, int akkaPort) {
          final Logger log = context.getLog();
         List<String[]> allProductDetails = LoadProduct.loadProducts(PRODUCT_CSV_FILE);
@@ -150,7 +137,6 @@ public class Main {
         }
         log.info("Loaded {} products from CSV. Starting partitioned initialization.", allProductDetails.size());
 
-        // Calculate this node's index based on its port relative to the primary
         int nodeIndex = akkaPort - PRIMARY_NODE_AKKA_PORT;
         if (nodeIndex < 0) {
             log.error("Node port {} is less than primary port {}. Cannot determine node index for partitioning. Skipping init.", akkaPort, PRIMARY_NODE_AKKA_PORT);
@@ -168,9 +154,9 @@ public class Main {
             if (productData.length == 5) {
                 try {
                     String productId = productData[0];
-                    // Calculate product partition based only on product ID and TOTAL_PARTITIONS
                     int productPartition = Math.abs(productId.hashCode()) % TOTAL_PARTITIONS;
 
+                    // Log the check for every product (DEBUG level)
                     log.debug("Node {} (Index {}): Checking Product ID {} (ProductPartition {})",
                              cluster.selfMember().address(), nodeIndex, productId, productPartition);
 
@@ -179,6 +165,7 @@ public class Main {
                         EntityRef<ProductActor.Command> productEntity =
                                 sharding.entityRefFor(ProductActor.TypeKey, productId);
 
+                        // Log intent to send (INFO level)
                         log.info("Node {} (Index {}) SENDING InitializeProduct for ID {} (ProductPartition {})",
                                  cluster.selfMember().address(), nodeIndex, productId, productPartition);
 
@@ -200,9 +187,10 @@ public class Main {
                  cluster.selfMember().address(), nodeIndex, checkedCount, initializedCount, EXPECTED_NODE_COUNT, nodeIndex);
     }
 
+    // Uses SLF4J Logger
     private static void startHttpServer(
             ActorContext<?> originalContext,
-            Logger log, // Expect SLF4J Logger
+            Logger log,
             ActorRef<Gateway.Command> gateway,
             int httpPort) {
 
@@ -242,16 +230,14 @@ public class Main {
 
         System.out.println("Starting Akka node on port: " + akkaPort);
 
-        // Use createRootBehaviorTyped which returns Behavior<RootCommand>
         final ActorSystem<RootCommand> system = ActorSystem.create(createRootBehaviorTyped(akkaPort), "ClusterSystem", finalConfig);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
              System.out.println("Shutdown hook triggered. Terminating ActorSystem...");
              system.terminate();
         }));
-
     }
-} // End of Main class
+}
 
 
 // --- HTTP Handler Class ---
@@ -275,7 +261,7 @@ class MarketplaceHttpHandler implements HttpHandler {
     public void handle(HttpExchange req) throws IOException {
         String path = req.getRequestURI().getPath();
         String method = req.getRequestMethod();
-        // log.info("Received HTTP request: {} {}", method, path);
+        log.info("Received HTTP request: {} {}", method, path); // Restored INFO log
 
         try {
             if ("GET".equals(method)) handleGet(req, path);
@@ -287,7 +273,7 @@ class MarketplaceHttpHandler implements HttpHandler {
             log.error("Error handling HTTP request {} {}: {}", method, path, e.getMessage(), e);
             e.printStackTrace();
             try {
-                 if(req.getResponseCode() == -1) {
+                 if(req.getResponseCode() == -1) { // Avoid error if response already sent
                      sendResponse(req, 500, "Internal Server Error", null);
                  }
             } catch (IOException ioEx) {
@@ -295,6 +281,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                  ioEx.printStackTrace();
             }
         }
+        // Removed finally block here - stream closed by sendResponse or catch block
     }
 
     private void handleGet(HttpExchange req, String path) throws IOException {
@@ -310,37 +297,42 @@ class MarketplaceHttpHandler implements HttpHandler {
         }
     }
 
-    // Example: handleGetProduct (without the problematic finally block)
     private void handleGetProduct(HttpExchange req, String productId) {
+        log.debug("Handler received GET request for product {}", productId); // Restored DEBUG log
         CompletionStage<ProductActor.ProductResponse> compl = AskPattern.ask(
                 gateway, (ActorRef<ProductActor.ProductResponse> ref) -> new Gateway.GetProductById(productId, ref),
                 askTimeout, scheduler);
 
-        compl.whenCompleteAsync((response, failure) -> {
-            try {
-                if (failure != null) {
-                    log.error("Ask failed for GetProductById {}: {}", productId, failure);
-                    sendResponse(req, 500, "Internal Server Error (Ask Timeout/Failure)", null);
-                } else {
-                    if (response.price >= 0 && !"Not Initialized".equals(response.name)) {
-                        sendResponse(req, 200, "application/json", response);
-                    } else {
-                        // log.info("Product {} not found or not initialized.", productId);
-                        sendResponse(req, 404, "Product Not Found", null);
+                compl.whenCompleteAsync((response, failure) -> {
+                    try {
+                        if (failure != null) {
+                            // **** LOG THE FAILURE EXPLICITLY ****
+                            log.error("Ask failed for GetProductById {}: {}", productId, failure.getMessage(), failure); 
+                            sendResponse(req, 500, "Internal Server Error (Ask Timeout/Failure)", null);
+                        } else if (response == null) {
+                             // **** HANDLE NULL RESPONSE (UNEXPECTED) ****
+                             log.error("Ask completed successfully but response was null for GetProductById {}", productId);
+                             sendResponse(req, 500, "Internal Server Error (Null Response)", null);
+                        } else { // Success path
+                            if (response.price >= 0 && !"Not Initialized".equals(response.name)) {
+                                 log.debug("Handler sending 200 OK for product {}", productId);
+                                sendResponse(req, 200, "application/json", response);
+                            } else {
+                                 log.info("Handler sending 404 Not Found for product {} (Actor replied Not Initialized)", productId);
+                                sendResponse(req, 404, "Product Not Found", null);
+                            }
+                        }
+                    } catch (IOException e) {
+                         log.error("IOException sending GET product response: {}", e.getMessage());
+                         e.printStackTrace();
+                         try { req.getResponseBody().close(); } catch (Exception ignored) {}
                     }
-                }
-            } catch (IOException e) {
-                 log.error("IOException sending GET product response: {}", e.getMessage());
-                 e.printStackTrace();
-                 try { req.getResponseBody().close(); } catch (Exception ignored) {}
-            }
-            // REMOVED finally block here
-        }, Executors.newSingleThreadExecutor());
+                    // REMOVED finally block here
+                }, Executors.newSingleThreadExecutor()); // Consider using Akka dispatcher later
     }
 
-    // --- Other Handlers (handleGetOrder, handlePost, handlePut, handleDelete) ---
-    // Make sure the finally block closing req.getResponseBody() is also removed from their whenCompleteAsync callbacks
-     private void handleGetOrder(HttpExchange req, String orderId) {
+    private void handleGetOrder(HttpExchange req, String orderId) {
+         log.debug("Handler received GET request for order {}", orderId);
          CompletionStage<OrderActor.OrderResponse> compl = AskPattern.ask(
                 gateway, (ActorRef<OrderActor.OrderResponse> ref) -> new Gateway.GetOrderById(orderId, ref),
                 askTimeout, scheduler);
@@ -351,10 +343,11 @@ class MarketplaceHttpHandler implements HttpHandler {
                     log.error("Ask failed for GetOrderById {}: {}", orderId, failure);
                     sendResponse(req, 500, "Internal Server Error (Ask Timeout/Failure)", null);
                 } else {
-                    if (response.order_id != 0 && !"Not Initialized".equals(response.status)) {
+                    if (response.order_id != 0 && !"NotInitialized".equals(response.status)) {
+                        log.debug("Handler sending 200 OK for order {}", orderId);
                         sendResponse(req, 200, "application/json", response);
                     } else {
-                        // log.info(...)
+                        log.info("Handler sending 404 Not Found for order {}", orderId);
                         sendResponse(req, 404, "Order Not Found", null);
                     }
                 }
@@ -363,7 +356,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                  e.printStackTrace();
                  try { req.getResponseBody().close(); } catch (Exception ignored) {}
             }
-            // REMOVED finally block here
+             // Removed finally block
         }, Executors.newSingleThreadExecutor());
      }
 
@@ -379,9 +372,10 @@ class MarketplaceHttpHandler implements HttpHandler {
                  log.error("Failed to parse POST /orders request body: {}", e.getMessage()); e.printStackTrace();
                  sendResponse(req, 400, "Bad Request: Invalid JSON format", null); return;
              }
+              log.debug("Handler received POST request for order, user {}", orderRequest.user_id);
              CompletionStage<PostOrder.PostOrderResponse> compl = AskPattern.ask(
                      gateway, (ActorRef<PostOrder.PostOrderResponse> ref) -> new Gateway.PostOrderReq(orderRequest.user_id, orderRequest.items, ref),
-                     askTimeout, scheduler);
+                     askTimeout, scheduler); // Consider longer timeout for POST
 
              compl.whenCompleteAsync((response, failure) -> {
                  try {
@@ -390,8 +384,10 @@ class MarketplaceHttpHandler implements HttpHandler {
                          sendResponse(req, 500, "Internal Server Error (Order processing timeout/failure)", null);
                      } else {
                          if (response.success) {
+                              log.debug("Handler sending 201 Created for order {}", response.orderResponse.order_id);
                              sendResponse(req, 201, "application/json", response.orderResponse);
                          } else {
+                             log.warn("Handler sending failure response for POST order, user {}: {}", orderRequest.user_id, response.message); // Restored WARN log
                              int statusCode = response.message != null && response.message.contains("Insufficient") ? 400 : 500;
                              sendResponse(req, statusCode, "Order creation failed: " + response.message, null);
                          }
@@ -400,7 +396,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                      log.error("IOException sending POST order response: {}", e.getMessage()); e.printStackTrace();
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
-                 // REMOVED finally block here
+                  // Removed finally block
              }, Executors.newSingleThreadExecutor());
          } else { sendResponse(req, 404, "Not Found", null); }
      }
@@ -419,6 +415,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                  log.error("Failed to parse PUT /orders request body: {}", e.getMessage()); e.printStackTrace();
                  sendResponse(req, 400, "Bad Request: Invalid JSON format or missing fields", null); return;
             }
+             log.debug("Handler received PUT request for order {}", orderId);
             CompletionStage<OrderActor.OperationResponse> compl = AskPattern.ask(
                     gateway, (ActorRef<OrderActor.OperationResponse> ref) -> new Gateway.PutOrderReq(orderId, ref),
                     askTimeout, scheduler);
@@ -430,9 +427,11 @@ class MarketplaceHttpHandler implements HttpHandler {
                          sendResponse(req, 500, "Internal Server Error (Update timeout/failure)", null);
                      } else {
                          if (response.success) {
+                             log.debug("Handler sending 200 OK for PUT order {}", orderId);
                              Map<String, Object> minimalResponse = Map.of("order_id", response.order_id, "status", response.status);
                              sendResponse(req, 200, "application/json", minimalResponse);
                          } else {
+                              log.warn("Handler sending failure response for PUT order {}: {}", orderId, response.message); // Restored WARN log
                              int statusCode = response.message != null && response.message.contains("terminal state") ? 400 : 404;
                              sendResponse(req, statusCode, "Failed to update order status: " + response.message, null);
                          }
@@ -441,7 +440,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                      log.error("IOException sending PUT order response: {}", e.getMessage()); e.printStackTrace();
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
-                 // REMOVED finally block here
+                  // Removed finally block
              }, Executors.newSingleThreadExecutor());
         } else { sendResponse(req, 400, "Bad Request: Invalid path for PUT", null); }
     }
@@ -450,6 +449,7 @@ class MarketplaceHttpHandler implements HttpHandler {
          String[] parts = path.split("/");
         if (parts.length == 3 && "orders".equals(parts[1])) {
             String orderId = parts[2];
+             log.debug("Handler received DELETE request for order {}", orderId);
             CompletionStage<DeleteOrder.DeleteOrderResponse> compl = AskPattern.ask(
                     gateway, (ActorRef<DeleteOrder.DeleteOrderResponse> ref) -> new Gateway.DeleteOrderReq(orderId, ref),
                     askTimeout, scheduler);
@@ -461,8 +461,10 @@ class MarketplaceHttpHandler implements HttpHandler {
                          sendResponse(req, 500, "Internal Server Error (Delete timeout/failure)", null);
                      } else {
                          if (response.success) {
+                             log.debug("Handler sending 200 OK for DELETE order {}", orderId);
                              sendResponse(req, 200, "application/json", response);
                          } else {
+                              log.warn("Handler sending failure response for DELETE order {}: {}", orderId, response.message); // Restored WARN log
                              int statusCode = response.message != null && response.message.contains("not found") ? 404 : 400;
                              sendResponse(req, statusCode, "Failed to delete order: " + response.message, null);
                          }
@@ -471,31 +473,28 @@ class MarketplaceHttpHandler implements HttpHandler {
                      log.error("IOException sending DELETE order response: {}", e.getMessage()); e.printStackTrace();
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
-                 // REMOVED finally block here
+                  // Removed finally block
              }, Executors.newSingleThreadExecutor());
         } else { sendResponse(req, 400, "Bad Request: Invalid path for DELETE", null); }
     }
 
-
-    // --- Send Response Helper ---
      private void sendResponse(HttpExchange exchange, int statusCode, String contentType, Object responseBodyObject) throws IOException {
         byte[] responseBytes = new byte[0];
         long responseLength = 0;
         boolean hasBody = false;
-        String logPrefix = "ola sendResponse [" + exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath() + "]: ";
+        String logPrefix = "sendResponse [" + exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath() + "]: ";
 
-        // log.debug(logPrefix + "Attempting to send status {}", statusCode); // Log removed
+        log.debug(logPrefix + "Attempting to send status {}", statusCode);
 
         if (responseBodyObject != null) {
             if (contentType != null && contentType.equals("application/json")) {
                 try {
-                    log.debug(logPrefix + "Serializing response object to JSON..."); // Log removed
+                    log.debug(logPrefix + "Serializing response object to JSON...");
                     responseBytes = objectMapper.writeValueAsBytes(responseBodyObject);
-                    log.debug(logPrefix + "Serialization successful, {} bytes.", responseBytes.length); // Log removed
+                    log.debug(logPrefix + "Serialization successful, {} bytes.", responseBytes.length);
                 } catch (Exception e) {
                     log.error(logPrefix + "!!! Jackson Serialization FAILED !!!", e);
-                    statusCode = 500;
-                    contentType = "text/plain; charset=utf-8";
+                    statusCode = 500; contentType = "text/plain; charset=utf-8";
                     responseBodyObject = "Internal Server Error: Failed to serialize response.";
                     responseBytes = responseBodyObject.toString().getBytes(StandardCharsets.UTF_8);
                 }
@@ -504,35 +503,32 @@ class MarketplaceHttpHandler implements HttpHandler {
                 if (contentType == null) contentType = "text/plain; charset=utf-8";
             }
             if(responseBytes.length > 0) {
-                responseLength = responseBytes.length;
-                hasBody = true;
+                responseLength = responseBytes.length; hasBody = true;
             } else { responseLength = -1; }
         } else {
-             responseLength = -1;
-             if (statusCode == 204) contentType = null;
+             responseLength = -1; if (statusCode == 204) contentType = null;
         }
         if (contentType != null) {
             exchange.getResponseHeaders().set("Content-Type", contentType);
         }
 
-        log.debug(logPrefix + "Sending headers: Status {}, Length {}", statusCode, responseLength); // Log removed
+        log.debug(logPrefix + "Sending headers: Status {}, Length {}", statusCode, responseLength);
         exchange.sendResponseHeaders(statusCode, responseLength);
-        log.debug(logPrefix + "Headers sent."); // Log removed
+        log.debug(logPrefix + "Headers sent.");
 
-        // This try-with-resources ensures stream is closed
         try (OutputStream os = exchange.getResponseBody()) {
             if (hasBody) {
-                log.debug(logPrefix + "Writing response body ({} bytes)...", responseLength); // Log removed
+                log.debug(logPrefix + "Writing response body ({} bytes)...", responseLength);
                 os.write(responseBytes);
-                log.debug(logPrefix + "Response body written successfully."); // Log removed
+                log.debug(logPrefix + "Response body written successfully.");
             } else {
-                log.debug(logPrefix + "Closing empty response body stream."); // Log removed
+                log.debug(logPrefix + "Closing empty response body stream.");
             }
         } catch (IOException writeError) {
              log.error(logPrefix + "!!! IOException during response body write !!!", writeError);
              throw writeError;
         }
-        log.debug(logPrefix + "sendResponse completed for status {}", statusCode); // Log removed
+        log.debug(logPrefix + "sendResponse completed for status {}", statusCode);
     }
 
-} // End of MarketplaceHttpHandler class
+}

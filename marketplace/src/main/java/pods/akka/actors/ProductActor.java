@@ -34,7 +34,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         // and sent via tell(). If it could potentially be serialized (e.g., for testing),
         // adding annotations would be required. For now, assuming local creation.
         public InitializeProduct(String productId, String name, String description, int price, int stockQuantity) {
-            this.productId = Integer.parseInt(productId); // Consider error handling
+            this.productId = Integer.parseInt(productId); // Consider info handling
             this.name = name;
             this.description = description;
             this.price = price;
@@ -175,7 +175,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         try {
             this.productId = Integer.parseInt(entityId);
         } catch (NumberFormatException e) {
-            log.error("Invalid Product ID format for entityId: {}. Stopping actor.", entityId, e);
+            log.info("Invalid Product ID format for entityId: {}. Stopping actor.", entityId, e);
             throw new IllegalArgumentException("Invalid Product ID format: " + entityId, e);
         }
         log.info("ProductActor created for ID: {}", this.productId);
@@ -193,7 +193,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     }
 
     private Receive<Command> uninitialized() {
-        log.debug("Actor {} entering uninitialized state", productId); // Add log
+        log.info("Actor {} entering uninitialized state", productId); // Add log
         return newReceiveBuilder()
             .onMessage(InitializeProduct.class, this::onInitializeProduct)
             .onMessage(GetProduct.class, msg -> {
@@ -219,7 +219,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     }
 
      private Receive<Command> initialized() {
-        log.debug("Actor {} entering initialized state", productId); // Add log
+        log.info("Actor {} entering initialized state", productId); // Add log
         return newReceiveBuilder()
             .onMessage(InitializeProduct.class, msg -> {
                 // log.warn("ProductActor {} received InitializeProduct again. Overwriting state.", productId); // LOG REMOVED
@@ -236,7 +236,7 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     private Behavior<Command> onInitializeProduct(InitializeProduct msg) {
         if (msg.productId != this.productId) {
-            // log.error("InitializeProduct ID mismatch! Actor ID: {}, Message ID: {}. Ignoring.", // LOG REMOVED
+            // log.info("InitializeProduct ID mismatch! Actor ID: {}, Message ID: {}. Ignoring.", // LOG REMOVED
             //    this.productId, msg.productId);
              return Behaviors.same(); 
         }
@@ -256,14 +256,27 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     }
 
     private Behavior<Command> onGetProduct(GetProduct msg) {
-        log.info("Actor {} handling GetProduct. Is Initialized: {}", productId, this.initialized); 
-        if (!initialized) { // Double-check state
-            msg.replyTo.tell(new ProductResponse(productId, "Not Initialized", "", -1, -1));
-       } else {
-            msg.replyTo.tell(new ProductResponse(productId, name, description, price, stockQuantity));
-       }
-        return this;
+        try {
+            log.info("Actor {} handling GetProduct. Is Initialized: {}", productId, this.initialized); 
+            if (!initialized) { // Double-check state just in case
+                log.warn("Actor {} handling GetProduct but state is !initialized. Replying Not Initialized.", productId);
+                msg.replyTo.tell(new ProductResponse(productId, "Not Initialized", "", -1, -1));
+            } else {
+                // This is the normal path
+                log.info("Actor {} GetProduct responding with current state.", productId);
+                msg.replyTo.tell(new ProductResponse(productId, name, description, price, stockQuantity));
+            }
+            // Stay in the current behavior (initialized)
+            return this; 
+        } catch (Exception e) {
+            // Log unexpected errors during GetProduct handling
+            log.error("!!! Unhandled exception in onGetProduct for Product {} !!! Stopping actor.", productId, e);
+            // We probably shouldn't reply if an error occurred, let the Ask timeout on the client side.
+            // Stopping the actor is often the safest approach on unexpected errors.
+            return Behaviors.stopped();
+        }
     }
+
 
      private Behavior<Command> onCheckStock(CheckStock msg) {
         boolean isSufficient = msg.quantity > 0 && msg.quantity <= stockQuantity;
