@@ -199,7 +199,7 @@ public class Main {
             int httpPort) {
 
         Scheduler scheduler = originalContext.getSystem().scheduler();
-        Duration askTimeout = Duration.ofSeconds(5);
+        Duration askTimeout = Duration.ofSeconds(25);
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 0);
             server.createContext("/", new MarketplaceHttpHandler(gateway, scheduler, askTimeout, log, originalContext));
@@ -349,7 +349,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                     log.error("Ask failed for GetOrderById {}: {}", orderId, failure);
                     sendResponse(req, 500, "Internal Server Error (Ask Timeout/Failure)", null);
                 } else {
-                    if (response.order_id != 0 && !"NotInitialized".equals(response.status)) {
+                    if (response.order_id != null && !"NotInitialized".equals(response.status)) {
                         log.debug("Handler sending 200 OK for order {}", orderId);
                         sendResponse(req, 200, "application/json", response);
                     } else {

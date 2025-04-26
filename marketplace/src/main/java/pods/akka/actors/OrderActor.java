@@ -12,21 +12,24 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import pods.akka.CborSerializable;
 
 import java.util.List;
-import java.util.ArrayList; 
+import java.util.ArrayList;
 
 // Import SLF4J Logger
 import org.slf4j.Logger;
 
 public class OrderActor extends AbstractBehavior<OrderActor.Command> {
 
-    // Interface and Message classes (ensure they implement CborSerializable)
+    // Interface and Message classes
     public interface Command extends CborSerializable {}
 
+    // Use String type for OrderEntity keys
     public static final EntityTypeKey<Command> TypeKey =
         EntityTypeKey.create(Command.class, "OrderEntity");
 
+    // --- Message: InitializeOrder ---
     public static final class InitializeOrder implements Command {
-        public final int orderId;
+        // CHANGED: orderId is now String
+        public final String orderId;
         public final int userId;
         public final List<OrderItem> items;
         public final int totalPrice;
@@ -35,13 +38,14 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
 
         @JsonCreator
         public InitializeOrder(
-            @JsonProperty("orderId") int orderId,
+            // CHANGED: @JsonProperty type to String
+            @JsonProperty("orderId") String orderId,
             @JsonProperty("userId") int userId,
             @JsonProperty("items") List<OrderItem> items,
             @JsonProperty("totalPrice") int totalPrice,
             @JsonProperty("initialStatus") String initialStatus,
             @JsonProperty("replyTo") ActorRef<OperationResponse> replyTo) {
-            this.orderId = orderId;
+            this.orderId = orderId; // Assign String
             this.userId = userId;
             this.items = items == null ? new ArrayList<>() : items;
             this.totalPrice = totalPrice;
@@ -50,6 +54,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
         }
     }
 
+    // --- Message: GetOrder ---
     public static final class GetOrder implements Command {
         public final ActorRef<OrderResponse> replyTo;
          @JsonCreator
@@ -58,6 +63,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
         }
     }
 
+    // --- Message: UpdateStatus ---
     public static final class UpdateStatus implements Command {
         public final String newStatus;
         public final ActorRef<OperationResponse> replyTo;
@@ -70,8 +76,10 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
         }
     }
 
+    // --- Reply: OrderResponse ---
     public static final class OrderResponse implements CborSerializable {
-        public final int order_id;
+        // CHANGED: order_id is now String
+        public final String order_id;
         public final int user_id;
         public final List<OrderItem> items;
         public final int total_price;
@@ -79,23 +87,27 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
 
         @JsonCreator
         public OrderResponse(
-            @JsonProperty("order_id") int orderId,
+            // CHANGED: @JsonProperty type to String
+            @JsonProperty("order_id") String orderId,
             @JsonProperty("user_id") int userId,
             @JsonProperty("items") List<OrderItem> items,
             @JsonProperty("total_price") int totalPrice,
             @JsonProperty("status") String status) {
-            this.order_id = orderId;
+            this.order_id = orderId; // Assign String
             this.user_id = userId;
             this.items = items == null ? new ArrayList<>() : items;
             this.total_price = totalPrice;
             this.status = status;
         }
-         public OrderResponse() { this(0, 0, new ArrayList<>(), 0, "Unknown"); }
+        // CHANGED: Default constructor uses String ID
+         public OrderResponse() { this("UNKNOWN", 0, new ArrayList<>(), 0, "Unknown"); }
     }
 
+    // --- Reply: OperationResponse ---
     public static final class OperationResponse implements CborSerializable {
         public final boolean success;
-        public final String order_id; 
+        // Kept as String (consistent with entityId)
+        public final String order_id;
         public final String status;
         public final String message;
 
@@ -110,14 +122,15 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
             this.status = status;
             this.message = message;
         }
-         public OperationResponse() { this(false, "0", "Unknown", "Default constructor"); }
+         public OperationResponse() { this(false, "UNKNOWN", "Unknown", "Default constructor"); }
     }
 
+    // --- Nested Class: OrderItem ---
     public static final class OrderItem implements CborSerializable {
         public final int product_id;
         public final int quantity;
 
-        @JsonCreator 
+        @JsonCreator
         public OrderItem(
             @JsonProperty("product_id") int product_id,
             @JsonProperty("quantity") int quantity) {
@@ -129,33 +142,37 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
 
     // --- State ---
     private final String entityId; // Store the String ID provided by sharding
-    private int orderIdInt; // Parsed int version for internal use/response if needed
+    // REMOVED: private int orderIdInt;
+    // ADDED: Store the String ID from InitializeOrder message
+    private String orderId;
     private int userId;
     private List<OrderItem> items;
     private int totalPrice;
     private String status;
     private boolean initialized;
-    
+
     // --- Logger ---
     private final Logger log; // SLF4J Logger
 
     // --- Factory and Constructor ---
     public static Behavior<Command> create(String entityId) {
+        // entityId provided by sharding IS the String Order ID (UUID)
         return Behaviors.setup(context -> new OrderActor(context, entityId));
     }
 
     private OrderActor(ActorContext<Command> context, String entityId) {
         super(context);
-        this.entityId = entityId; // Store String ID
-        this.log = context.getLog(); // Get SLF4J Logger
-        this.initialized = false; 
-        this.status = "PendingInitialization"; 
-        // log.info("OrderActor created for entityId: {}", entityId); // ADDED LOG
+        this.entityId = entityId; // Store the String ID from sharding
+        this.log = context.getLog();
+        this.initialized = false;
+        this.status = "PendingInitialization";
+        log.info("OrderActor created for entityId: '{}'", entityId);
     }
 
     // --- Receive Logic ---
     @Override
     public Receive<Command> createReceive() {
+        // Start in uninitialized state
         return uninitialized();
     }
 
@@ -163,12 +180,13 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
         return newReceiveBuilder()
             .onMessage(InitializeOrder.class, this::onInitializeOrder)
             .onMessage(GetOrder.class, msg -> {
-                log.warn("OrderActor {} received GetOrder before initialization.", entityId); // ADDED LOG
-                msg.replyTo.tell(new OrderResponse(0, 0, new ArrayList<>(), 0, "NotInitialized")); 
+                log.warn("OrderActor '{}' received GetOrder before initialization.", entityId);
+                // Use entityId (String) for default response ID
+                msg.replyTo.tell(new OrderResponse(entityId, 0, new ArrayList<>(), 0, "NotInitialized"));
                 return Behaviors.same();
             })
             .onMessage(UpdateStatus.class, msg -> {
-                log.warn("OrderActor {} received UpdateStatus before initialization.", entityId); // ADDED LOG
+                log.warn("OrderActor '{}' received UpdateStatus before initialization.", entityId);
                 msg.replyTo.tell(new OperationResponse(false, entityId, this.status, "Order not initialized"));
                 return Behaviors.same();
             })
@@ -178,9 +196,15 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
     private Receive<Command> initialized() {
          return newReceiveBuilder()
             .onMessage(InitializeOrder.class, msg -> {
-                 log.warn("OrderActor {} received InitializeOrder again. Ignoring.", entityId); // ADDED LOG
-                 msg.replyTo.tell(new OperationResponse(false, String.valueOf(msg.orderId), this.status, "Order already initialized"));
-                 return Behaviors.same(); 
+                 // Check if the message orderId matches the actor's entityId
+                 if (!msg.orderId.equals(this.entityId)) {
+                    log.error("OrderActor '{}' received InitializeOrder again but with mismatched ID: '{}'. Ignoring.", entityId, msg.orderId);
+                    msg.replyTo.tell(new OperationResponse(false, msg.orderId, this.status, "Order already initialized with different ID"));
+                 } else {
+                    log.warn("OrderActor '{}' received InitializeOrder again with matching ID. Ignoring.", entityId);
+                    msg.replyTo.tell(new OperationResponse(false, msg.orderId, this.status, "Order already initialized"));
+                 }
+                 return Behaviors.same();
             })
             .onMessage(GetOrder.class, this::onGetOrder)
             .onMessage(UpdateStatus.class, this::onUpdateStatus)
@@ -188,28 +212,21 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
     }
 
     private Behavior<Command> onInitializeOrder(InitializeOrder msg) {
-         // Validate if message ID matches entity ID
-         if (!String.valueOf(msg.orderId).equals(this.entityId)) {
-             log.error("InitializeOrder ID mismatch! Actor entityId: {}, Message orderId: {}. Ignoring.",
-                this.entityId, msg.orderId); // ADDED LOG
-             msg.replyTo.tell(new OperationResponse(false, String.valueOf(msg.orderId), "Unknown", "Initialization ID mismatch"));
-             return Behaviors.same(); // Stay uninitialized
-         }
+         // Sharding guarantees the message is for this entityId.
+         // We store the ID from the message, which should match entityId.
+         this.orderId = msg.orderId; // Store the String ID from the message
+         this.userId = msg.userId;
+         this.items = msg.items == null ? new ArrayList<>() : msg.items;
+         this.totalPrice = msg.totalPrice;
+         this.status = msg.initialStatus == null ? "UNKNOWN" : msg.initialStatus;
+         this.initialized = true;
 
-        // Initialize state
-        this.orderIdInt = msg.orderId; // Store the int version too
-        this.userId = msg.userId;
-        this.items = msg.items == null ? new ArrayList<>() : msg.items;
-        this.totalPrice = msg.totalPrice;
-        this.status = msg.initialStatus == null ? "UNKNOWN" : msg.initialStatus;
-        this.initialized = true;
+        // Log successful initialization using the String ID
+        log.info("OrderActor initialized: entityId='{}', orderId='{}', userId={}, itemsCount={}, totalPrice={}, status={}",
+                entityId, orderId, userId, items.size(), totalPrice, status);
 
-        // ADDED LOG for successful initialization
-        log.info("OrderActor initialized: entityId={}, orderId={}, userId={}, itemsCount={}, totalPrice={}, status={}",
-                entityId, orderIdInt, userId, items.size(), totalPrice, status);
-
-        // Reply success
-        msg.replyTo.tell(new OperationResponse(true, entityId, status, "Order initialized successfully"));
+        // Reply success using the String orderId from the message (which should match entityId)
+        msg.replyTo.tell(new OperationResponse(true, orderId, status, "Order initialized successfully"));
 
         // Transition to initialized behavior
         return initialized();
@@ -218,25 +235,35 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> {
     // --- Methods below are called when in 'initialized' state ---
 
     private Behavior<Command> onGetOrder(GetOrder msg) {
-        log.info("OrderActor {} received GetOrder request.", entityId); // ADDED LOG
-        msg.replyTo.tell(new OrderResponse(orderIdInt, userId, items, totalPrice, status));
-        return this;
+        log.info("OrderActor '{}' received GetOrder request.", entityId);
+        // Use the stored String orderId in the response
+        msg.replyTo.tell(new OrderResponse(orderId, userId, items, totalPrice, status));
+        return  Behaviors.same(); // Stay initialized
     }
 
     private Behavior<Command> onUpdateStatus(UpdateStatus msg) {
+        if (!initialized) { // Safety check, though should only be called in initialized state
+             log.error("OrderActor '{}' received UpdateStatus but is not initialized!", entityId);
+             msg.replyTo.tell(new OperationResponse(false, entityId, this.status, "Internal error: Actor not initialized"));
+             return Behaviors.same();
+        }
+
         // Prevent updates on terminal states
         if ("DELIVERED".equalsIgnoreCase(this.status) || "CANCELLED".equalsIgnoreCase(this.status)) {
-            // ADDED LOG for attempt to update terminal state
-            log.warn("OrderActor {} received UpdateStatus ({}) but order is already in terminal state ({}). Ignoring.", 
+            log.warn("OrderActor '{}' received UpdateStatus ('{}') but order is already in terminal state ('{}'). Ignoring.",
                     entityId, msg.newStatus, this.status);
             msg.replyTo.tell(new OperationResponse(false, entityId, this.status, "Order is already in a terminal state (" + this.status + ")"));
-        } else {
+        } else if (msg.newStatus == null || msg.newStatus.trim().isEmpty()){
+             log.warn("OrderActor '{}' received UpdateStatus with null or empty newStatus. Ignoring.", entityId);
+             msg.replyTo.tell(new OperationResponse(false, entityId, this.status, "Invalid new status provided"));
+        }
+        else {
             String oldStatus = this.status;
-            this.status = msg.newStatus;
-            // ADDED LOG for successful status update
-            log.info("OrderActor {} status updated from {} to {}", entityId, oldStatus, this.status);
+            this.status = msg.newStatus.toUpperCase(); // Store status consistently (e.g., uppercase)
+            log.info("OrderActor '{}' status updated from '{}' to '{}'", entityId, oldStatus, this.status);
+            // Use entityId (which is the String orderId) in response
             msg.replyTo.tell(new OperationResponse(true, entityId, this.status, "Order status updated to " + this.status));
         }
-        return this;
+        return Behaviors.same(); // Stay initialized
     }
 }

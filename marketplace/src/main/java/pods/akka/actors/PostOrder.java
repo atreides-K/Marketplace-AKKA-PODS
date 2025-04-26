@@ -8,9 +8,11 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
-import com.fasterxml.jackson.annotation.JsonCreator; // Needed for Jackson
-import com.fasterxml.jackson.annotation.JsonProperty; // Needed for Jackson
-import pods.akka.CborSerializable; // Import CborSerializable
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import pods.akka.CborSerializable;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -20,16 +22,22 @@ import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.HashMap; // Import HashMap
+import java.util.HashMap;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture; // Import CompletableFuture
-import java.util.concurrent.CompletionStage; // Import CompletionStage
-import java.util.stream.Collectors; // Import Collectors
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.stream.Collectors;
+
+// Import SLF4J Logger
+import org.slf4j.Logger;
 
 // PHASE 2: Worker actor, likely created via Router. Needs serialization for messages.
 public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
-    // PHASE 2 CHANGE: Command interface must be serializable
+    // Get logger instance
+    private final Logger log = getContext().getLog();
+
+    // --- Command Protocol ---
     public interface Command extends CborSerializable {}
 
     // Initial command to start order processing.
@@ -49,7 +57,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
     }
 
-    // Internal messages for state transitions
+    // --- Internal messages for state transitions ---
     private static final class UserValidationResponse implements Command {
         final boolean success;
         final boolean discountAvailable;
@@ -108,8 +116,7 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     private record StockDeducted(int productId, int quantity, ProductActor.OperationResponse response) implements Command {}
 
 
-    // Response sent back to the original requester (e.g., Gateway via Ask).
-    // PHASE 2 CHANGE: Response must be serializable
+    // --- Response sent back to the original requester (e.g., Gateway via Ask). ---
     public static final class PostOrderResponse implements CborSerializable {
         public final boolean success;
         public final String message;
@@ -126,27 +133,27 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         }
          // Default constructor for Jackson
          public PostOrderResponse() {
-            this(false, "Default constructor", null);
+            this(false, "Default constructor message", null); // Provide default message
         }
     }
 
     // --- State Variables ---
-    private String orderId; // PHASE 2 CHANGE: Use String for UUID
+    private String orderId; // String UUID
     private int userId;
     private List<OrderActor.OrderItem> items;
     private ActorRef<PostOrderResponse> pendingReplyTo;
-
-    // State for multi-step process
     private boolean discountAvailable;
     private Map<Integer, Boolean> stockCheckResults;
     private Map<Integer, ProductActor.OperationResponse> deductionResults;
-    private Map<Integer, Integer> deductedQuantities; // Track successful deductions for rollback
+    private Map<Integer, Integer> deductedQuantities;
     private int finalPrice;
-    private boolean processingFailed = false; // Flag to prevent further steps on failure
+    private boolean processingFailed = false;
 
     private final HttpClient httpClient;
     private final ClusterSharding sharding;
-    private final ActorContext<Command> context; // Store context for async callbacks
+    private final ActorContext<Command> context;
+    private final ObjectMapper objectMapper = new ObjectMapper(); // For robust JSON parsing
+
 
     // --- Constructor and Factory ---
     public static Behavior<Command> create() {
@@ -155,31 +162,35 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
     private PostOrder(ActorContext<Command> context) {
         super(context);
-        this.context = context; // Store context
+        this.context = context;
         this.httpClient = HttpClient.newBuilder()
-                                   .connectTimeout(Duration.ofSeconds(5))
+                                   .connectTimeout(Duration.ofSeconds(5)) // Standard timeout for HTTP calls
                                    .build();
         this.sharding = ClusterSharding.get(context.getSystem());
-        context.getLog().info("PostOrder worker actor started.");
+        log.info("PostOrder worker actor started. Path: {}", context.getSelf().path());
     }
 
     // --- Receive Logic ---
     @Override
     public Receive<Command> createReceive() {
-        // Initial state: waiting for StartOrder
+        // Initial behavior waiting for the starting command
         return newReceiveBuilder()
                 .onMessage(StartOrder.class, this::onStartOrder)
                 .build();
     }
 
-    // --- Step Handlers ---
+    // --- Step Handlers (with added logging) ---
 
     // Step 1: Start Order, Validate User
     private Behavior<Command> onStartOrder(StartOrder cmd) {
-        if (processingFailed) return Behaviors.stopped(); // Should not happen here, but safety
+        log.debug("onStartOrder: Received for userId {}", cmd.userId);
+        if (processingFailed) { // Should not happen here, but safety first
+             log.warn("onStartOrder: Received StartOrder but already marked as failed. Stopping.");
+             return Behaviors.stopped();
+        }
 
-        // PHASE 2 CHANGE: Generate String UUID for Order ID
-        this.orderId = UUID.randomUUID().toString();
+        // Initialize state for this order request
+        this.orderId = UUID.randomUUID().toString(); // Generate String UUID
         this.userId = cmd.userId;
         this.items = cmd.items;
         this.pendingReplyTo = cmd.replyTo;
@@ -189,227 +200,318 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         this.deductedQuantities = new HashMap<>();
         this.finalPrice = 0;
 
-        context.getLog().info("PostOrder processing request for userId {}, generated orderId {}", userId, orderId);
+        log.info("onStartOrder: Processing request for userId {}, generated orderId '{}'", userId, orderId);
 
+        // Basic validation
         if (items == null || items.isEmpty()) {
-            context.getLog().error("Order {} rejected: No items provided.", orderId);
+            log.error("onStartOrder: Order '{}' rejected: No items provided.", orderId);
             return failOrder("Order must contain items.");
         }
+        // Optional: More validation (e.g., check if replyTo is null)
+        if (this.pendingReplyTo == null) {
+             log.error("onStartOrder: Order '{}' rejected: Missing replyTo actor reference.", orderId);
+             // Cannot easily failOrder here as we don't know who to reply to. Log and stop.
+             return Behaviors.stopped();
+        }
 
-        // PHASE 2 CHANGE: Use localhost
+        // Step 1.1: Validate User via HTTP
+        log.debug("onStartOrder: Sending user validation request for userId {}", userId);
         HttpRequest userRequest = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:8080/users/" + userId)) // Use localhost
+                .uri(URI.create("http://localhost:8080/users/" + userId)) // Assuming Account service runs here
                 .timeout(Duration.ofSeconds(5))
                 .GET()
                 .build();
 
-        // Asynchronously validate user
+        // Use sendAsync for non-blocking HTTP call
         httpClient.sendAsync(userRequest, BodyHandlers.ofString())
-            .whenCompleteAsync((resp, ex) -> {
+            .whenCompleteAsync((resp, ex) -> { // Handle response/exception asynchronously
+                log.debug("onStartOrder: User validation response received (or exception).");
                 if (ex != null || resp.statusCode() != 200) {
                     String error = (ex != null) ? ex.getMessage() : "Status " + resp.statusCode();
-                    context.getLog().error("User validation failed for user {}: {}", userId, error);
+                    log.error("onStartOrder: User validation HTTP failed for user {}: {}", userId, error, ex);
+                    // Send failure message back to self to trigger failOrder logic
                     context.getSelf().tell(new UserValidationResponse(false, false, "User validation failed: " + error));
                 } else {
-                    boolean discountAvailed = resp.body().contains("\"discount_availed\":true"); // Basic JSON check
-                    context.getLog().info("User {} validated. Discount already availed: {}", userId, discountAvailed);
-                    context.getSelf().tell(new UserValidationResponse(true, !discountAvailed, "User validated"));
+                    try {
+                         // Basic check for discount status in response body
+                         boolean discountAvailed = resp.body().contains("\"discount_availed\":true");
+                         log.info("onStartOrder: User {} validated. Discount already availed: {}", userId, discountAvailed);
+                         // Send success message back to self
+                         context.getSelf().tell(new UserValidationResponse(true, !discountAvailed, "User validated"));
+                    } catch (Exception parseEx) {
+                         log.error("onStartOrder: Failed to parse user validation response body: {}", parseEx.getMessage(), parseEx);
+                         context.getSelf().tell(new UserValidationResponse(false, false, "User validation failed: Response parse error"));
+                    }
                 }
-            }, context.getExecutionContext());
+            }, context.getExecutionContext()); // Use Akka dispatcher for callback
 
-        // Transition to waiting for user validation response
+        // Transition to waiting for the UserValidationResponse internal message
+        log.debug("onStartOrder: Transitioning to wait for UserValidationResponse");
         return Behaviors.receive(Command.class)
             .onMessage(UserValidationResponse.class, this::onUserValidationResponse)
-             .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder) // Handle early failure
+            .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder) // Handle early failure from callbacks
             .build();
     }
 
     // Step 2: Handle User Validation, Start Stock Check
     private Behavior<Command> onUserValidationResponse(UserValidationResponse msg) {
-         if (processingFailed) return Behaviors.stopped();
-         if (!msg.success) {
-             return failOrder(msg.message);
-         }
-         this.discountAvailable = msg.discountAvailable;
-         context.getLog().info("Discount available for order {}: {}", orderId, this.discountAvailable);
+        log.debug("onUserValidationResponse: Received. Success: {}", msg.success);
+        if (processingFailed) {
+            log.warn("onUserValidationResponse: Already failed, stopping.");
+            return Behaviors.stopped();
+        }
+        if (!msg.success) {
+            log.error("onUserValidationResponse: Failing order due to unsuccessful user validation: {}", msg.message);
+            return failOrder(msg.message);
+        }
+        this.discountAvailable = msg.discountAvailable;
+        log.info("onUserValidationResponse: Discount available for order '{}': {}", orderId, this.discountAvailable);
 
-         // Start checking stock for all items concurrently
-         context.getLog().info("Order {}: Starting stock check for {} items.", orderId, items.size());
-         for (OrderActor.OrderItem item : items) {
-             if (item.quantity <= 0) {
-                 return failOrder("Item " + item.product_id + " has invalid quantity: " + item.quantity);
-             }
-             EntityRef<ProductActor.Command> productEntity =
-                 sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
+        // Step 2.1: Start checking stock for all items concurrently using context.ask
+        log.info("onUserValidationResponse: Order '{}': Starting stock check for {} items.", orderId, items.size());
+        if (items.isEmpty()) { // Should have been caught earlier, but double check
+             log.warn("onUserValidationResponse: No items found in order '{}' at stock check phase.", orderId);
+             // If no items, technically stock check passes, proceed? Or fail? Let's proceed.
+              context.getSelf().tell(new StockCheckComplete(true, "No items to check stock for"));
+        } else {
+            for (OrderActor.OrderItem item : items) {
+                if (item.quantity <= 0) {
+                    log.error("onUserValidationResponse: Invalid quantity {} for product {}", item.quantity, item.product_id);
+                    return failOrder("Item " + item.product_id + " has invalid quantity: " + item.quantity);
+                }
+                log.debug("onUserValidationResponse: Asking stock for product {}", item.product_id);
+                EntityRef<ProductActor.Command> productEntity =
+                    sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id)); // Use String ID
 
-             // Ask each product actor
-             context.ask(
-                 ProductActor.StockCheckResponse.class,
-                 productEntity,
-                 Duration.ofSeconds(3), // Shorter timeout for stock check
-                 (ActorRef<ProductActor.StockCheckResponse> adapter) -> new ProductActor.CheckStock(item.quantity, adapter),
-                 (response, failure) -> {
-                     if (response != null) {
-                         return new StockChecked(item.product_id, response.sufficient);
-                     } else {
-                         context.getLog().error("Stock check failed for product {}: {}", item.product_id, failure);
-                         return new StockChecked(item.product_id, false); // Treat timeout/failure as insufficient stock
-                     }
-                 }
-             );
-         }
+                // Use context.ask to query the ProductActor
+                context.ask(
+                    ProductActor.StockCheckResponse.class, // Expected response type
+                    productEntity,                          // Target actor reference
+                    Duration.ofSeconds(3),                  // Timeout for this ask
+                    // Function to create the message, providing the adapter for reply
+                    (ActorRef<ProductActor.StockCheckResponse> adapter) -> new ProductActor.CheckStock(item.quantity, adapter),
+                    // Function to map the response/failure to an internal message for self
+                    (response, failure) -> {
+                        if (response != null) {
+                            // Success case
+                            log.debug("onUserValidationResponse: Stock check response for product {}: {}", item.product_id, response.sufficient);
+                            return new StockChecked(item.product_id, response.sufficient);
+                        } else {
+                            // Failure case (timeout or other exception)
+                            log.error("onUserValidationResponse: Stock check ask failed for product {}: {}", item.product_id, failure != null ? failure.getMessage() : "Unknown reason", failure);
+                            return new StockChecked(item.product_id, false); // Treat failure as insufficient stock
+                        }
+                    }
+                );
+            }
+        }
 
-         // Transition to waiting for all stock check responses
-         return Behaviors.receive(Command.class)
-             .onMessage(StockChecked.class, this::onStockCheckedResult)
-             .onMessage(StockCheckComplete.class, this::onStockCheckComplete) // If aggregation logic sends this
-             .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder) // Handle early failure
-             .build();
+        // Transition to waiting for all StockChecked internal messages
+        log.debug("onUserValidationResponse: Transitioning to wait for StockChecked results");
+        return Behaviors.receive(Command.class)
+            .onMessage(StockChecked.class, this::onStockCheckedResult)
+            .onMessage(StockCheckComplete.class, this::onStockCheckComplete) // Handles the self-sent message if needed
+            .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
+            .build();
     }
 
      // Step 2b: Collect Stock Check Results
-    private Behavior<Command> onStockCheckedResult(StockChecked msg) {
-        if (processingFailed) return Behaviors.stopped();
-        context.getLog().debug("Order {}: Received stock check for product {}: sufficient={}", orderId, msg.productId, msg.sufficient);
-        stockCheckResults.put(msg.productId, msg.sufficient);
-
-        // Check if all responses are received
-        if (stockCheckResults.size() == items.size()) {
-            boolean allSufficient = stockCheckResults.values().stream().allMatch(Boolean::booleanValue);
-            if (allSufficient) {
-                 context.getLog().info("Order {}: All stock checks passed.", orderId);
-                 context.getSelf().tell(new StockCheckComplete(true, "All stock available"));
-            } else {
-                List<Integer> failedProducts = stockCheckResults.entrySet().stream()
-                    .filter(entry -> !entry.getValue())
-                    .map(Map.Entry::getKey)
-                    .collect(Collectors.toList());
-                context.getLog().error("Order {}: Stock check failed for products: {}", orderId, failedProducts);
-                // Trigger failure immediately
-                return failOrder("Insufficient stock for products: " + failedProducts);
+     private Behavior<Command> onStockCheckedResult(StockChecked msg) {
+        // ADD try block around the entire handler logic
+        try {
+            log.debug("onStockCheckedResult: Received for product {}: sufficient={}", msg.productId, msg.sufficient);
+            if (processingFailed) {
+                 log.warn("onStockCheckedResult: Already failed, ignoring stock check result.");
+                 // Return same to stay in the ignore state defined by failOrder
+                 // or potentially stop if preferred, but same is safer for now.
+                 return Behaviors.same();
             }
-        }
-        // Remain in the same state, waiting for more stock check results
-        return Behaviors.same();
-    }
+            stockCheckResults.put(msg.productId, msg.sufficient);
 
+            // Check if all responses have been received
+            if (stockCheckResults.size() == items.size()) {
+                log.debug("onStockCheckedResult: All stock checks received for order '{}'. Aggregating results.", orderId);
+                boolean allSufficient = stockCheckResults.values().stream().allMatch(Boolean::booleanValue);
+                if (allSufficient) {
+                     log.info("onStockCheckedResult: Order '{}': All stock checks passed.", orderId);
+                     // Send message to self to proceed to the next major step
+                     log.debug("onStockCheckedResult: *** BEFORE sending StockCheckComplete to self ({}) ***", context.getSelf().path()); // Keep this log
+                     context.getSelf().tell(new StockCheckComplete(true, "All stock available"));
+                     log.debug("onStockCheckedResult: *** AFTER sending StockCheckComplete to self ***"); // Keep this log
+                } else {
+                    // Find which products failed
+                    List<Integer> failedProducts = stockCheckResults.entrySet().stream()
+                        .filter(entry -> !entry.getValue())
+                        .map(Map.Entry::getKey)
+                        .collect(Collectors.toList());
+                    log.error("onStockCheckedResult: Order '{}': Stock check failed for products: {}", orderId, failedProducts);
+                    log.debug("onStockCheckedResult: Returning failOrder behavior due to insufficient stock."); // Add log before return
+                    return failOrder("Insufficient stock for products: " + failedProducts); // Fail fast
+                }
+            } else {
+                 // Still waiting for more responses
+                 log.debug("onStockCheckedResult: Waiting for more stock checks (received {} of {})", stockCheckResults.size(), items.size());
+            }
+            // Stay in the current behavior (the one defined in onUserValidationResponse)
+            // waiting for more StockChecked OR the StockCheckComplete message
+            log.debug("onStockCheckedResult: Returning this (staying in current behavior)"); // Add log before return
+            return Behaviors.receive(Command.class)
+            .onMessage(StockCheckComplete.class, this::onStockCheckComplete) // Handles the self-sent message if needed
+            .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
+            .build();
+
+        } catch (Exception e) { // ADD catch block for any unexpected Exception
+             log.error("!!! EXCEPTION in onStockCheckedResult for order '{}' !!!", orderId, e); // Log the exception
+             // If an exception happens, trigger failure explicitly
+             log.debug("onStockCheckedResult: Returning failOrder behavior due to exception."); // Add log before return
+             return failOrder("Internal error during stock check aggregation: " + e.getMessage());
+        }
+    }
 
     // Step 3: Handle Stock Check Completion, Start Stock Deduction
     private Behavior<Command> onStockCheckComplete(StockCheckComplete msg) {
-        if (processingFailed) return Behaviors.stopped();
-        if (!msg.success) { // Should have been caught by failOrder earlier, but double-check
-            return failOrder(msg.message);
+        log.debug("onStockCheckComplete: Received. Success: {}", msg.success);
+        if (processingFailed) {
+             log.warn("onStockCheckComplete: Already failed, stopping.");
+             return Behaviors.stopped();
+        }
+        if (!msg.success) { // Should usually be caught earlier by failOrder, but good safeguard
+             log.error("onStockCheckComplete: Received explicit failure message: {}", msg.message);
+             return failOrder(msg.message);
         }
 
-        // Start deducting stock for all items concurrently
-        context.getLog().info("Order {}: Starting stock deduction for {} items.", orderId, items.size());
-        for (OrderActor.OrderItem item : items) {
-            EntityRef<ProductActor.Command> productEntity =
-                sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
+        // Step 3.1: Start deducting stock for all items concurrently
+        log.info("onStockCheckComplete: Order '{}': Starting stock deduction for {} items.", orderId, items.size());
+        if (items.isEmpty()) { // Handle case where there are no items
+            log.warn("onStockCheckComplete: No items in order '{}' to deduct stock from.", orderId);
+            context.getSelf().tell(new StockDeductionComplete(true, 0, "No stock to deduct")); // Proceed with 0 price
+        } else {
+            for (OrderActor.OrderItem item : items) {
+                log.debug("onStockCheckComplete: Asking deduction for product {}", item.product_id);
+                EntityRef<ProductActor.Command> productEntity =
+                    sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
 
-            // Ask product actor to deduct stock
-            context.ask(
-                ProductActor.OperationResponse.class,
-                productEntity,
-                Duration.ofSeconds(5),
-                (ActorRef<ProductActor.OperationResponse> adapter) -> new ProductActor.DeductStock(item.quantity, adapter),
-                (response, failure) -> {
-                    if (response != null) {
-                        return new StockDeducted(item.product_id, item.quantity, response);
-                    } else {
-                        context.getLog().error("Stock deduction failed for product {}: {}", item.product_id, failure);
-                        // Create a failure response to trigger rollback
-                        return new StockDeducted(item.product_id, item.quantity, new ProductActor.OperationResponse(false, "Timeout or communication error", 0));
+                // Use context.ask to request deduction
+                context.ask(
+                    ProductActor.OperationResponse.class, // Expected response type
+                    productEntity,                           // Target
+                    Duration.ofSeconds(5),                   // Timeout
+                    // Message factory
+                    (ActorRef<ProductActor.OperationResponse> adapter) -> new ProductActor.DeductStock(item.quantity, adapter),
+                    // Response/failure mapper
+                    (response, failure) -> {
+                        if (response != null) {
+                             log.debug("onStockCheckComplete: Stock deduction response for product {}: {}", item.product_id, response.success);
+                             return new StockDeducted(item.product_id, item.quantity, response);
+                        } else {
+                            log.error("onStockCheckComplete: Stock deduction ask failed for product {}: {}", item.product_id, failure != null ? failure.getMessage() : "Unknown reason", failure);
+                            // Create a failure response to trigger rollback in the next step
+                            return new StockDeducted(item.product_id, item.quantity, new ProductActor.OperationResponse(false, "Timeout or communication error during deduction", 0));
+                        }
                     }
-                }
-            );
+                );
+            }
         }
 
-        // Transition to waiting for all deduction responses
+        // Transition to waiting for all StockDeducted internal messages
+        log.debug("onStockCheckComplete: Transitioning to wait for StockDeducted results");
         return Behaviors.receive(Command.class)
             .onMessage(StockDeducted.class, this::onStockDeductedResult)
-             .onMessage(StockDeductionComplete.class, this::onStockDeductionComplete)
+            .onMessage(StockDeductionComplete.class, this::onStockDeductionComplete) // Handles self-sent message
             .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
             .build();
     }
 
      // Step 3b: Collect Stock Deduction Results
     private Behavior<Command> onStockDeductedResult(StockDeducted msg) {
-         if (processingFailed) return Behaviors.stopped();
-         context.getLog().debug("Order {}: Received stock deduction for product {}: success={}, priceDeducted={}",
-                orderId, msg.productId, msg.response.success, msg.response.priceDeducted);
+         log.debug("onStockDeductedResult: Received for product {}: success={}", msg.productId, msg.response.success);
+         if (processingFailed) {
+            log.warn("onStockDeductedResult: Already failed, ignoring.");
+            return Behaviors.same();
+         }
          deductionResults.put(msg.productId, msg.response);
 
          if (msg.response.success) {
-            // Track successfully deducted items/quantities for potential rollback
+            // Track successfully deducted item/quantity for potential rollback
             deductedQuantities.put(msg.productId, msg.quantity);
             this.finalPrice += msg.response.priceDeducted; // Accumulate price
+            log.debug("onStockDeductedResult: Product {} deducted. Accumulated price: {}", msg.productId, this.finalPrice);
          } else {
-            // If any deduction fails, mark the entire process as failed immediately
-            context.getLog().error("Order {}: Stock deduction failed for product {}: {}", orderId, msg.productId, msg.response.message);
-             return failOrder("Stock deduction failed for product " + msg.productId + ": " + msg.response.message);
+            // Fail fast if any deduction fails
+            log.error("onStockDeductedResult: Order '{}': Stock deduction failed for product {}: {}", orderId, msg.productId, msg.response.message);
+            return failOrder("Stock deduction failed for product " + msg.productId + ": " + msg.response.message);
          }
 
          // Check if all responses received
          if (deductionResults.size() == items.size()) {
-            // Since we fail fast on the first error, reaching here means all deductions succeeded
-            context.getLog().info("Order {}: All stock deductions successful. Accumulated price: {}", orderId, this.finalPrice);
-
+            log.info("onStockDeductedResult: Order '{}': All stock deductions received. Accumulated price before discount: {}", orderId, this.finalPrice);
             // Apply discount if available
             if (this.discountAvailable) {
-                int discountedPrice = (int) (this.finalPrice * 0.9); // Apply 10% discount
-                 context.getLog().info("Order {}: Applying 10% discount. Price reduced from {} to {}", orderId, this.finalPrice, discountedPrice);
-                 this.finalPrice = discountedPrice;
+                int originalPrice = this.finalPrice;
+                this.finalPrice = (int) (this.finalPrice * 0.9); // Apply 10% discount
+                log.info("onStockDeductedResult: Order '{}': Applying 10% discount. Price reduced from {} to {}", orderId, originalPrice, this.finalPrice);
             }
+            // Send message to self to proceed
+            log.debug("onStockDeductedResult: Sending StockDeductionComplete to self.");
             context.getSelf().tell(new StockDeductionComplete(true, this.finalPrice, "Deduction successful"));
+         } else {
+              log.debug("onStockDeductedResult: Waiting for more stock deductions (received {} of {})", deductionResults.size(), items.size());
          }
-         // Remain waiting for more deduction results
-        return Behaviors.same();
+         // Stay in the current behavior waiting for more results or the completion message
+        return Behaviors.receive(Command.class)
+        .onMessage(StockDeductionComplete.class, this::onStockDeductionComplete) // Handles self-sent message
+        .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
+        .build();
+
     }
 
     // Step 4: Handle Deduction Completion, Check Wallet
     private Behavior<Command> onStockDeductionComplete(StockDeductionComplete msg) {
-        if (processingFailed) return Behaviors.stopped();
-        if (!msg.success) { // Should have been caught earlier
+        log.debug("onStockDeductionComplete: Received self-message. Success: {}, Final Price: {}", msg.success, msg.finalPrice);
+        if (processingFailed) {
+             log.warn("onStockDeductionComplete: Already failed, stopping.");
+             return Behaviors.stopped();
+        }
+        if (!msg.success) { // Should be caught earlier, but safeguard
+            log.error("onStockDeductionComplete: Received explicit failure message: {}", msg.message);
             return failOrder(msg.message);
         }
-        this.finalPrice = msg.finalPrice; // Final price after potential discount
+        this.finalPrice = msg.finalPrice; // Store final price
 
-        context.getLog().info("Order {}: Checking wallet balance for user {}. Required amount: {}", orderId, userId, finalPrice);
-
-        // PHASE 2 CHANGE: Use localhost
+        // Step 4.1: Check Wallet via HTTP
+        log.info("onStockDeductionComplete: Order '{}': Checking wallet balance for user {}. Required amount: {}", orderId, userId, finalPrice);
         HttpRequest walletCheckRequest = HttpRequest.newBuilder()
-            .uri(URI.create("http://localhost:8082/wallets/" + userId)) // Use localhost
+            .uri(URI.create("http://localhost:8082/wallets/" + userId)) // Assuming Wallet service runs here
             .timeout(Duration.ofSeconds(5))
             .GET()
             .build();
 
         httpClient.sendAsync(walletCheckRequest, BodyHandlers.ofString())
             .whenCompleteAsync((resp, ex) -> {
-                if (ex != null || resp.statusCode() != 200) {
+                 log.debug("onStockDeductionComplete: Wallet check response received (or exception).");
+                 if (ex != null || resp.statusCode() != 200) {
                     String error = (ex != null) ? ex.getMessage() : "Status " + resp.statusCode();
-                    context.getLog().error("Wallet check failed for user {}: {}", userId, error);
+                    log.error("onStockDeductionComplete: Wallet check HTTP failed for user {}: {}", userId, error, ex);
                     context.getSelf().tell(new WalletCheckResponse(false, "Wallet check communication failed: " + error));
                 } else {
                     try {
-                        // Basic JSON parsing - needs improvement for robustness
                         String body = resp.body();
-                        int balance = parseWalletBalance(body); // Use helper
-                        context.getLog().info("Wallet balance for user {}: {}", userId, balance);
+                        int balance = parseWalletBalanceRobust(body); // Use robust helper
+                        log.info("onStockDeductionComplete: Wallet balance for user {}: {}", userId, balance);
                         if (balance >= finalPrice) {
                             context.getSelf().tell(new WalletCheckResponse(true, "Sufficient balance"));
                         } else {
-                            context.getLog().error("Insufficient wallet balance for user {}. Required: {}, Available: {}", userId, finalPrice, balance);
+                            log.error("onStockDeductionComplete: Insufficient wallet balance for user {}. Required: {}, Available: {}", userId, finalPrice, balance);
                             context.getSelf().tell(new WalletCheckResponse(false, "Insufficient wallet balance"));
                         }
                     } catch (Exception e) {
-                         context.getLog().error("Failed to parse wallet balance response for user {}: {}", userId, e.getMessage());
+                         log.error("onStockDeductionComplete: Failed to parse wallet balance response for user {}: {}", userId, e.getMessage(), e);
                          context.getSelf().tell(new WalletCheckResponse(false, "Failed to parse wallet balance response"));
                     }
                 }
-            }, context.getExecutionContext());
+            }, context.getExecutionContext()); // Use Akka dispatcher
 
-         // Transition to waiting for wallet check result
+         log.debug("onStockDeductionComplete: Transitioning to wait for WalletCheckResponse");
          return Behaviors.receive(Command.class)
             .onMessage(WalletCheckResponse.class, this::onWalletCheckResponse)
             .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
@@ -418,18 +520,21 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
     // Step 5: Handle Wallet Check, Debit Wallet
     private Behavior<Command> onWalletCheckResponse(WalletCheckResponse msg) {
-        if (processingFailed) return Behaviors.stopped();
+        log.debug("onWalletCheckResponse: Received. Success: {}", msg.success);
+        if (processingFailed) {
+            log.warn("onWalletCheckResponse: Already failed, stopping.");
+            return Behaviors.stopped();
+        }
         if (!msg.success) {
-            // Wallet check failed (communication or insufficient funds), trigger rollback
-            return failOrder(msg.message);
+            log.error("onWalletCheckResponse: Failing order due to wallet check failure: {}", msg.message);
+            return failOrder(msg.message); // Triggers product rollback
         }
 
-        context.getLog().info("Order {}: Wallet check successful for user {}. Debiting amount: {}", orderId, userId, finalPrice);
-
+        // Step 5.1: Debit Wallet via HTTP
+        log.info("onWalletCheckResponse: Order '{}': Wallet check successful for user {}. Debiting amount: {}", orderId, userId, finalPrice);
         String debitJson = String.format("{\"action\": \"debit\", \"amount\": %d}", finalPrice);
-        // PHASE 2 CHANGE: Use localhost
         HttpRequest debitRequest = HttpRequest.newBuilder()
-                .uri(URI.create("http://localhost:8082/wallets/" + userId)) // Use localhost
+                .uri(URI.create("http://localhost:8082/wallets/" + userId))
                 .timeout(Duration.ofSeconds(5))
                 .header("Content-Type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(debitJson))
@@ -437,17 +542,18 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
         httpClient.sendAsync(debitRequest, BodyHandlers.ofString())
             .whenCompleteAsync((resp, ex) -> {
+                 log.debug("onWalletCheckResponse: Wallet debit response received (or exception).");
                  if (ex != null || resp.statusCode() != 200) {
                     String error = (ex != null) ? ex.getMessage() : "Status " + resp.statusCode();
-                    context.getLog().error("Wallet debit failed for user {}: {}", userId, error);
+                    log.error("onWalletCheckResponse: Wallet debit HTTP failed for user {}: {}", userId, error, ex);
                     context.getSelf().tell(new WalletDebitResponse(false, "Wallet debit failed: " + error));
                 } else {
-                    context.getLog().info("Wallet debited successfully for user {}. Amount: {}", userId, finalPrice);
+                    log.info("onWalletCheckResponse: Wallet debited successfully for user {}. Amount: {}", userId, finalPrice);
                     context.getSelf().tell(new WalletDebitResponse(true, "Wallet debited successfully"));
                 }
-            }, context.getExecutionContext());
+            }, context.getExecutionContext()); // Use Akka dispatcher
 
-         // Transition to waiting for wallet debit result
+         log.debug("onWalletCheckResponse: Transitioning to wait for WalletDebitResponse");
          return Behaviors.receive(Command.class)
             .onMessage(WalletDebitResponse.class, this::onWalletDebitResponse)
             .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
@@ -456,19 +562,23 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
     // Step 6: Handle Wallet Debit, Update Discount (if applicable)
     private Behavior<Command> onWalletDebitResponse(WalletDebitResponse msg) {
-        if (processingFailed) return Behaviors.stopped();
+        log.debug("onWalletDebitResponse: Received. Success: {}", msg.success);
+        if (processingFailed) {
+            log.warn("onWalletDebitResponse: Already failed, stopping.");
+            return Behaviors.stopped();
+        }
         if (!msg.success) {
-            // Wallet debit failed, trigger rollback
-            return failOrder(msg.message);
+             log.error("onWalletDebitResponse: Failing order due to wallet debit failure: {}", msg.message);
+             // Wallet debit failed AFTER stock deduction. CRITICAL. Need rollback.
+             return failOrder(msg.message);
         }
 
-        // If discount was available and applied, update user status
+        // Step 6.1: Update Discount Status via HTTP (if applicable)
         if (this.discountAvailable) {
-            context.getLog().info("Order {}: Updating discount availed status for user {}", orderId, userId);
+            log.info("onWalletDebitResponse: Order '{}': Updating discount availed status for user {}", orderId, userId);
             String discountJson = String.format("{\"id\": %d, \"discount_availed\": true}", userId);
-            // PHASE 2 CHANGE: Use localhost
             HttpRequest discountRequest = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:8080/users/" + userId + "/discount")) // Use localhost
+                    .uri(URI.create("http://localhost:8080/users/" + userId + "/discount")) // Assuming Account service endpoint
                     .timeout(Duration.ofSeconds(5))
                     .header("Content-Type", "application/json")
                     .PUT(HttpRequest.BodyPublishers.ofString(discountJson))
@@ -476,30 +586,30 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
             httpClient.sendAsync(discountRequest, BodyHandlers.ofString())
                 .whenCompleteAsync((resp, ex) -> {
+                     log.debug("onWalletDebitResponse: Discount update response received (or exception).");
                      if (ex != null || resp.statusCode() != 200) {
-                        // Log error, but potentially proceed with order creation anyway?
-                        // Decide on failure policy here. For now, log and signal non-fatal failure.
                         String error = (ex != null) ? ex.getMessage() : "Status " + resp.statusCode();
-                        context.getLog().error("Discount update failed for user {}: {}. Proceeding with order creation.", userId, error);
+                        // Log error but proceed anyway (business decision)
+                        log.error("onWalletDebitResponse: Discount update HTTP failed for user {}: {}. Proceeding with order creation.", userId, error, ex);
                         context.getSelf().tell(new DiscountUpdateResponse(false, "Discount update failed: " + error));
                     } else {
-                         context.getLog().info("Discount status updated successfully for user {}", userId);
+                         log.info("onWalletDebitResponse: Discount status updated successfully for user {}", userId);
                          context.getSelf().tell(new DiscountUpdateResponse(true, "Discount updated"));
                     }
-                }, context.getExecutionContext());
+                }, context.getExecutionContext()); // Use Akka dispatcher
 
-            // Transition to waiting for discount update response
-             return Behaviors.receive(Command.class)
+            log.debug("onWalletDebitResponse: Transitioning to wait for DiscountUpdateResponse");
+            return Behaviors.receive(Command.class)
                 .onMessage(DiscountUpdateResponse.class, this::onDiscountUpdateResponse)
                 .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
                 .build();
         } else {
-            // No discount applied, proceed directly to order initialization
-            context.getLog().info("Order {}: No discount applied. Proceeding to initialize order entity.", orderId);
-            // Simulate a successful discount update step to proceed
-            context.getSelf().tell(new DiscountUpdateResponse(true, "No discount applicable"));
-             return Behaviors.receive(Command.class)
-                .onMessage(DiscountUpdateResponse.class, this::onDiscountUpdateResponse) // Will immediately receive the self-sent message
+            // No discount to update, skip to next step
+            log.info("onWalletDebitResponse: Order '{}': No discount applicable. Proceeding to initialize order entity.", orderId);
+            context.getSelf().tell(new DiscountUpdateResponse(true, "No discount applicable")); // Trigger next step immediately
+            // Define behavior to handle this self-sent message
+            return Behaviors.receive(Command.class)
+                .onMessage(DiscountUpdateResponse.class, this::onDiscountUpdateResponse)
                 .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
                 .build();
         }
@@ -507,90 +617,105 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
      // Step 7: Handle Discount Update, Initialize Order Actor
     private Behavior<Command> onDiscountUpdateResponse(DiscountUpdateResponse msg) {
-        if (processingFailed) return Behaviors.stopped();
-        // Log if discount update failed, but proceed anyway as per current logic
+        log.debug("onDiscountUpdateResponse: Received. Success: {}", msg.success);
+        if (processingFailed) {
+             log.warn("onDiscountUpdateResponse: Already failed, stopping.");
+             return Behaviors.stopped();
+        }
         if (!msg.success) {
-             context.getLog().warn("Order {}: Proceeding despite discount update failure: {}", orderId, msg.message);
+             // Log warning but continue, as decided in previous step
+             log.warn("onDiscountUpdateResponse: Order '{}': Proceeding despite discount update failure: {}", orderId, msg.message);
         }
 
-        context.getLog().info("Order {}: Initializing OrderActor entity.", orderId);
+        // Step 7.1: Initialize Order Actor via context.ask
+        log.info("onDiscountUpdateResponse: Order '{}': Initializing OrderActor entity.", orderId);
+        // Use the String orderId for sharding
         EntityRef<OrderActor.Command> orderEntity =
                 sharding.entityRefFor(OrderActor.TypeKey, orderId);
 
-        // Parse orderId to int ONLY IF OrderActor.InitializeOrder requires int
-        // If OrderActor uses String ID internally, keep it as String.
-        // Assuming OrderActor.InitializeOrder takes int for now, based on previous code.
-        int orderIdInt;
-        try {
-             // This relies on the UUID hash being parseable as int, which is NOT GUARANTEED
-             // It's better to modify OrderActor to accept String ID or use a sequential int ID generator.
-             // Using UUID hash directly is very risky. Generating a simpler int ID:
-             orderIdInt = Math.abs(orderId.hashCode()); // Revert to simpler int ID generation
-            //  context.log.warn("Using hashCode derived int ID: {}", orderIdInt);
-        } catch (NumberFormatException e) {
-            // context.log.error("Cannot create int order ID from UUID string {}. Failing order.", orderId);
-            return failOrder("Internal error generating order ID.");
-        }
+        // REMOVED: int orderIdInt calculation
 
-
+        log.debug("onDiscountUpdateResponse: Asking OrderActor to initialize with String orderId '{}'", orderId);
         context.ask(
-            OrderActor.OperationResponse.class,
-            orderEntity,
-            Duration.ofSeconds(5),
-            // Create the InitializeOrder message
+            OrderActor.OperationResponse.class, // Expected response type
+            orderEntity,                          // Target actor
+            Duration.ofSeconds(5),                // Timeout for this ask
+            // CORRECTED: Create InitializeOrder message with String orderId
             (ActorRef<OrderActor.OperationResponse> adapter) ->
-                new OrderActor.InitializeOrder(orderIdInt, userId, items, finalPrice, "PLACED", adapter),
-            // Handle the response
+                new OrderActor.InitializeOrder(orderId, userId, items, finalPrice, "PLACED", adapter),
+            // Map response/failure to internal message
             (response, failure) -> {
                  if (response != null && response.success) {
+                     log.debug("onDiscountUpdateResponse: Order init ask succeeded.");
                      return new OrderInitializationResponse(true, response, "Order entity initialized");
                  } else {
-                     String error = (response != null) ? response.message : "Timeout or communication error";
-                     context.getLog().error("OrderActor initialization failed for order {}: {}", orderId, error);
+                     String error = "Unknown Error";
+                     if (failure != null) {
+                         error = "Ask Failure: " + failure.getMessage();
+                     } else if (response != null) {
+                         error = "Actor Reply Failure: " + response.message;
+                     }
+                     // Log full details of failure
+                     log.error("onDiscountUpdateResponse: OrderActor initialization ask failed for order '{}': {}", orderId, error, failure);
                      return new OrderInitializationResponse(false, response, "Order entity initialization failed: " + error);
                  }
             }
         );
 
-        // Transition to waiting for order initialization response
+        log.debug("onDiscountUpdateResponse: Transitioning to wait for OrderInitializationResponse");
         return Behaviors.receive(Command.class)
             .onMessage(OrderInitializationResponse.class, this::onOrderInitializationResponse)
             .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
             .build();
     }
 
-
-     // Step 8: Handle Order Initialization, Get Final Order Details
+    // Step 8: Handle Order Initialization, Get Final Order Details
     private Behavior<Command> onOrderInitializationResponse(OrderInitializationResponse msg) {
-        if (processingFailed) return Behaviors.stopped();
+        log.debug("onOrderInitializationResponse: Received. Success: {}", msg.success);
+        if (processingFailed) {
+            log.warn("onOrderInitializationResponse: Already failed, stopping.");
+            return Behaviors.stopped();
+        }
         if (!msg.success) {
-             // Order initialization failed. This is critical. Need to rollback wallet debit?
-             context.getLog().error("CRITICAL: Order {} failed during OrderActor initialization: {}. Wallet debit might need manual rollback.", orderId, msg.message);
-             // Trigger rollback for products (wallet is harder)
+             // Order failed AFTER wallet debit. Critical.
+             log.error("CRITICAL: Order '{}' failed during OrderActor initialization: {}. Wallet debit might need manual rollback.", orderId, msg.message);
+             // Trigger product rollback
              return failOrder("Order entity initialization failed: " + msg.message);
         }
 
-        context.getLog().info("Order {}: OrderActor initialized successfully. Fetching final order details.", orderId);
+        // Step 8.1: Get final order details using context.ask
+        log.info("onOrderInitializationResponse: Order '{}': OrderActor initialized successfully. Fetching final order details.", orderId);
+        // Use String orderId for sharding
         EntityRef<OrderActor.Command> orderEntity =
                 sharding.entityRefFor(OrderActor.TypeKey, orderId);
 
+        log.debug("onOrderInitializationResponse: Asking OrderActor for final details using GetOrder.");
         context.ask(
-            OrderActor.OrderResponse.class,
-            orderEntity,
-            Duration.ofSeconds(5),
+            OrderActor.OrderResponse.class, // Expected response type
+            orderEntity,                    // Target
+            Duration.ofSeconds(5),          // Timeout
+            // Message factory
             (ActorRef<OrderActor.OrderResponse> adapter) -> new OrderActor.GetOrder(adapter),
+            // Response/failure mapper
             (response, failure) -> {
                  if (response != null) {
+                     // Ensure the response ID matches if needed (optional sanity check)
+                     if (!response.order_id.equals(this.orderId)) {
+                          log.error("onOrderInitializationResponse: Received FinalOrderDetails but ID mismatch! Expected '{}', Got '{}'. Treating as failure.", this.orderId, response.order_id);
+                           return new OrderCreationFailed("Internal error: Mismatched order details retrieved.");
+                     }
+                     log.debug("onOrderInitializationResponse: GetOrder ask succeeded.");
                      return new FinalOrderDetailsReceived(response);
                  } else {
-                     context.getLog().error("Failed to get final order details for {}: {}", orderId, failure);
-                     // Order is created, but we can't get details. Reply with failure message but indicate order might exist.
-                     return new OrderCreationFailed("Failed to retrieve final order details, but order might be created (ID: " + orderId + ")");
+                     log.error("onOrderInitializationResponse: Failed to get final order details for order '{}': {}", orderId, failure != null ? failure.getMessage() : "Unknown reason", failure);
+                     // Decide policy: Fail completely or reply success but without full details?
+                     // Let's fail completely for now.
+                     return new OrderCreationFailed("Failed to retrieve final order details after creation (ID: " + orderId + ")");
                  }
             }
         );
 
-         // Transition to waiting for final order details
+         log.debug("onOrderInitializationResponse: Transitioning to wait for FinalOrderDetailsReceived");
          return Behaviors.receive(Command.class)
             .onMessage(FinalOrderDetailsReceived.class, this::onFinalOrderDetailsReceived)
             .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
@@ -599,79 +724,123 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
      // Step 9: Final Success - Reply and Stop
     private Behavior<Command> onFinalOrderDetailsReceived(FinalOrderDetailsReceived msg) {
-        if (processingFailed) return Behaviors.stopped();
-        context.getLog().info("Order {} created successfully. Replying to requester.", orderId);
-        pendingReplyTo.tell(new PostOrderResponse(true, "Order created successfully", msg.orderResponse));
-        // Order successful, stop the worker actor
-        return Behaviors.stopped();
+        log.debug("onFinalOrderDetailsReceived: Received final details for order '{}'", msg.orderResponse.order_id);
+        if (processingFailed) {
+             log.warn("onFinalOrderDetailsReceived: Processing already marked as failed, stopping.");
+             // We might have already replied with failure, avoid replying again.
+             return Behaviors.stopped();
+        }
+        // Final success step
+        log.info("Order '{}' created successfully. Replying to original requester.", msg.orderResponse.order_id);
+        if (pendingReplyTo != null) {
+             pendingReplyTo.tell(new PostOrderResponse(true, "Order created successfully", msg.orderResponse));
+        } else {
+             log.error("onFinalOrderDetailsReceived: Cannot reply success for order '{}', pendingReplyTo is null!", msg.orderResponse.order_id);
+        }
+        log.debug("onFinalOrderDetailsReceived: Stopping actor after successful reply.");
+        return Behaviors.stopped(); // Success, stop the worker
     }
 
 
     // --- Failure Handling ---
 
-    // Centralized failure logic
+    // Centralized method to trigger the failure sequence
     private Behavior<Command> failOrder(String reason) {
-         if (processingFailed) return Behaviors.same(); // Avoid duplicate rollbacks/replies
-         processingFailed = true; // Mark as failed
-         context.getLog().error("Order {} failed: {}", orderId, reason);
+         log.debug("failOrder: Initiating failure process for order '{}'. Reason: {}", orderId, reason);
+         if (processingFailed) {
+             log.warn("failOrder: Failure already triggered for order '{}', ignoring duplicate call.", orderId);
+             return Behaviors.same(); // Avoid duplicate rollbacks/replies
+         }
+         processingFailed = true; // Mark as failed to prevent further actions
+         log.error("Order '{}' failed: {}", orderId, reason);
 
-         // Perform rollback for deducted products
+         // Perform compensation logic (rollback stock)
          rollbackProductStock("Order failure: " + reason);
 
-         // Send failure response immediately
+         // Send message to self to trigger final reply and stop
+         log.debug("failOrder: Sending OrderCreationFailed to self for order '{}'.", orderId);
          context.getSelf().tell(new OrderCreationFailed(reason));
 
-         // Transition to final failure state
+         // Transition to a final state that only handles OrderCreationFailed and ignores others
+         log.debug("failOrder: Transitioning to final failure state for order '{}'.", orderId);
          return Behaviors.receive(Command.class)
              .onMessage(OrderCreationFailed.class, this::finalizeFailedOrder)
-              // Ignore any further messages that might arrive from steps already in progress
+              // Ignore any further internal messages that might arrive late from async operations
              .onAnyMessage(msg -> {
-                 context.getLog().debug("Order {} ignoring message {} after failure.", orderId, msg.getClass().getSimpleName());
+                 log.debug("Order '{}' ignoring message {} after failure initiated.", orderId, msg.getClass().getSimpleName());
                  return Behaviors.same();
              })
              .build();
     }
 
-     // Final state after failure has been triggered
+     // Handles the self-sent failure message to reply and stop
     private Behavior<Command> finalizeFailedOrder(OrderCreationFailed msg) {
-        context.getLog().debug("Finalizing failed order {}. Replying with failure.", orderId);
-        pendingReplyTo.tell(new PostOrderResponse(false, msg.reason, null));
-        // Stop the worker actor
-        return Behaviors.stopped();
+        log.debug("finalizeFailedOrder: Finalizing failed order '{}'. Replying with failure.", orderId);
+        if (pendingReplyTo != null) {
+             pendingReplyTo.tell(new PostOrderResponse(false, msg.reason, null));
+        } else {
+             // This should ideally not happen if StartOrder validated replyTo
+             log.error("finalizeFailedOrder: Cannot reply failure for order '{}', pendingReplyTo is null!", orderId);
+        }
+        log.debug("finalizeFailedOrder: Stopping actor after failure reply for order '{}'.", orderId);
+        return Behaviors.stopped(); // Stop the worker
     }
 
 
-    // Helper method for product stock rollback
+    // Helper method for product stock rollback (compensation)
     private void rollbackProductStock(String reason) {
-         context.getLog().warn("Order {}: Rolling back product stock due to failure: {}", orderId, reason);
-         if (deductedQuantities.isEmpty()) {
-             context.getLog().info("Order {}: No product stock deductions to roll back.", orderId);
+         log.warn("rollbackProductStock: Order '{}': Rolling back product stock due to failure: {}", orderId, reason);
+         if (deductedQuantities == null || deductedQuantities.isEmpty()) {
+             log.info("rollbackProductStock: Order '{}': No product stock deductions to roll back.", orderId);
              return;
          }
+         log.debug("rollbackProductStock: Rolling back deductions for products: {}", deductedQuantities.keySet());
          for (Map.Entry<Integer, Integer> entry : deductedQuantities.entrySet()) {
              int prodId = entry.getKey();
              int qty = entry.getValue();
              if (qty > 0) {
-                 EntityRef<ProductActor.Command> productEntity =
-                     sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(prodId));
-                 productEntity.tell(new ProductActor.AddStock(qty));
-                 context.getLog().info("Order {}: Sent AddStock rollback for product {} (quantity: {})", orderId, prodId, qty);
+                 try {
+                     // Use String product ID for sharding
+                     EntityRef<ProductActor.Command> productEntity =
+                         sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(prodId));
+                     // Send AddStock message (fire-and-forget)
+                     productEntity.tell(new ProductActor.AddStock(qty));
+                     log.info("rollbackProductStock: Order '{}': Sent AddStock rollback for product {} (quantity: {})", orderId, prodId, qty);
+                 } catch (Exception e) {
+                     // Log error but continue trying to roll back others
+                     log.error("rollbackProductStock: Order '{}': Error getting EntityRef or telling AddStock for product {}: {}", orderId, prodId, e.getMessage(), e);
+                 }
              }
          }
-         deductedQuantities.clear(); // Clear map after rollback initiated
+         // Clear map AFTER initiating rollback messages
+         // NOTE: This is best-effort rollback. For production, consider patterns like Saga with explicit compensation steps.
+         deductedQuantities.clear();
     }
 
-     // Helper to parse wallet balance (basic)
-    private int parseWalletBalance(String responseBody) throws NumberFormatException {
-        // Very basic parsing, assumes format like {"balance": 123}
-        // Needs robust JSON parsing in real application (e.g., using Jackson)
-        String balanceLabel = "\"balance\":";
-        int startIndex = responseBody.indexOf(balanceLabel);
-        if (startIndex == -1) throw new NumberFormatException("Balance field not found");
-        startIndex += balanceLabel.length();
-        int endIndex = responseBody.indexOf("}", startIndex);
-        if (endIndex == -1) endIndex = responseBody.length(); // If it's the last field
-        String balanceStr = responseBody.substring(startIndex, endIndex).trim();
-        return Integer.parseInt(balanceStr);
+    // Helper method for robust JSON parsing of wallet balance
+     private int parseWalletBalanceRobust(String responseBody) throws Exception {
+        log.debug("parseWalletBalanceRobust: Attempting to parse wallet balance response body.");
+        if (responseBody == null || responseBody.trim().isEmpty()) {
+             log.error("parseWalletBalanceRobust: Wallet balance response body is null or empty.");
+             throw new Exception("Wallet balance response body is null or empty.");
+        }
+        try {
+            JsonNode root = objectMapper.readTree(responseBody);
+            if (root.has("balance") && root.get("balance").isInt()) { // More specific check
+                 int balance = root.get("balance").asInt();
+                 log.debug("parseWalletBalanceRobust: Parsed balance from JSON 'balance' field: {}", balance);
+                 return balance;
+            } else {
+                 log.warn("parseWalletBalanceRobust: JSON field 'balance' not found or not an integer in body: '{}'. Attempting to parse whole body as int.", responseBody);
+                 // Fallback: Try parsing the whole body as an integer
+                 return Integer.parseInt(responseBody.trim());
+            }
+        } catch (NumberFormatException nfe) {
+             log.error("parseWalletBalanceRobust: Failed to parse response body as integer: '{}'", responseBody, nfe);
+             throw new Exception("Wallet balance response is not valid JSON with an integer 'balance' field, nor is it a simple integer: " + responseBody, nfe);
+        } catch (Exception e) { // Catch other JSON parsing errors
+             log.error("parseWalletBalanceRobust: Error parsing wallet balance JSON: '{}'", responseBody, e);
+             throw new Exception("Error parsing wallet balance JSON: " + e.getMessage(), e);
+        }
     }
 }

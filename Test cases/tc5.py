@@ -55,10 +55,11 @@ def concurrency_order_test():
       - Multiple threads attempt to place orders concurrently.
       - At the end, the total ordered quantity should not exceed the product's initial stock.
     """
-    user_id = 5001
+    user_id = 503
     name = "Concurrent Tester"
-    email = "concurrent@test.com"
-    product_id = 101   # Ensure this product exists in your products.csv
+    email = "concurraent@tst.com"
+    product_id = 102
+       # Ensure this product exists in your products.csv
     order_quantity = 1 # each order places quantity 1
     initial_wallet = 1000000  # plenty of funds
 

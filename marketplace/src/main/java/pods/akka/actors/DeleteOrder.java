@@ -15,15 +15,22 @@ import pods.akka.CborSerializable;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.List; // <--- FIX 1: Added import
+import java.util.List; // Import List
+
+// Import SLF4J Logger
+import org.slf4j.Logger;
 
 // PHASE 2: Worker actor, likely created via Router. Needs serialization for messages.
 public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
 
-    // PHASE 2 CHANGE: Command interface must be serializable
+    // Get logger instance
+    private final Logger log = getContext().getLog();
+
+    // --- Command Protocol ---
     public interface Command extends CborSerializable {}
 
     // Initial command to start order deletion.
@@ -39,31 +46,29 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         }
     }
 
-    // Internal message indicating that order status update is done.
-    private static final class OrderStatusUpdated implements Command {
-        public final OrderActor.OperationResponse response;
-        public OrderStatusUpdated(OrderActor.OperationResponse response) {
-            this.response = response;
+    // --- Internal Messages ---
+
+    // Renamed: Message carrying the result of the initial GetOrder ask
+    private static final class InitialOrderCheckResult implements Command {
+        public final OrderActor.OrderResponse orderDetails; // Null if not found/error
+        public final String failureReason; // Null if success
+        public InitialOrderCheckResult(OrderActor.OrderResponse details, String failureReason) {
+            this.orderDetails = details;
+            this.failureReason = failureReason;
         }
     }
 
-    // Internal message carrying the response from the GetOrder call.
-    private static final class OrderDetailsReceived implements Command {
-        public final OrderActor.OrderResponse orderDetails;
-        public OrderDetailsReceived(OrderActor.OrderResponse orderDetails) {
-            this.orderDetails = orderDetails;
+    // Renamed: Message carrying the result of the UpdateStatus ask
+    private static final class OrderStatusUpdateResult implements Command {
+        public final OrderActor.OperationResponse updateResponse; // Null if failure
+        public final String failureReason; // Null if success
+        public OrderStatusUpdateResult(OrderActor.OperationResponse response, String failureReason) {
+            this.updateResponse = response;
+            this.failureReason = failureReason;
         }
     }
 
-    // Internal message for various failures
-    private static final class ProcessingFailed implements Command {
-        public final String reason;
-        public ProcessingFailed(String reason) {
-            this.reason = reason;
-        }
-    }
-
-    // Message for wallet credit result.
+    // Message carrying the result of the Wallet credit HTTP call
     private static final class WalletCreditResult implements Command {
         public final boolean success;
         public final String message;
@@ -73,8 +78,17 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         }
     }
 
-     // Response sent back to the original requester (e.g., Gateway via Ask).
-    // PHASE 2 CHANGE: Response must be serializable
+    // Generic internal failure message (alternative to dedicated failure messages)
+    // Can be used if an unrecoverable error occurs outside of specific ask/http calls
+    private static final class ProcessingFailed implements Command {
+        public final String reason;
+        public ProcessingFailed(String reason) {
+            this.reason = reason;
+        }
+    }
+
+
+    // --- Response sent back to the original requester ---
     public static final class DeleteOrderResponse implements CborSerializable {
         public final boolean success;
         public final String message;
@@ -85,17 +99,17 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
             this.success = success;
             this.message = message;
         }
-         // Default constructor for Jackson
+         // Default constructor
          public DeleteOrderResponse() {
-            this(false, "Default constructor");
+            this(false, "Default constructor message");
         }
     }
 
-    // State variables.
+    // --- State Variables ---
     private String orderId;
     private int userId; // Needed for wallet interaction
     private int totalPrice; // Needed for wallet interaction
-    private List<OrderActor.OrderItem> itemsToRestock; // <--- FIX 1: Uses List
+    private List<OrderActor.OrderItem> itemsToRestock; // Store items from valid order
     private ActorRef<DeleteOrderResponse> pendingReplyTo;
     private EntityRef<OrderActor.Command> orderEntity; // Ref to the specific sharded OrderActor
 
@@ -103,179 +117,289 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     private final ClusterSharding sharding;
     private final ActorContext<Command> context; // Store context
 
+
+    // --- Constructor and Factory ---
     public static Behavior<Command> create() {
         return Behaviors.setup(DeleteOrder::new);
     }
 
     private DeleteOrder(ActorContext<Command> context) {
         super(context);
-        this.context = context; // Store context for async callbacks
+        this.context = context;
         this.httpClient = HttpClient.newBuilder()
                                    .connectTimeout(Duration.ofSeconds(5))
                                    .build();
         this.sharding = ClusterSharding.get(context.getSystem());
         this.itemsToRestock = new ArrayList<>(); // Initialize list
-        context.getLog().info("DeleteOrder worker actor started.");
+        log.info("DeleteOrder worker actor started. Path: {}", context.getSelf().path());
     }
 
-    // FIX 2: REMOVED the first, incomplete createReceive() definition that was here.
-
-    // --- Step Handlers (unchanged from previous version) ---
-
-    // Step 1: Receive StartDelete, check if OrderActor exists.
-    private Behavior<Command> onStartDelete(StartDelete cmd) {
-        // ... (logic as before) ...
-        this.orderId = cmd.orderId;
-        this.pendingReplyTo = cmd.replyTo;
-        context.getLog().info("DeleteOrder processing request for orderId: {}", orderId);
-        this.orderEntity = sharding.entityRefFor(OrderActor.TypeKey, orderId);
-        context.ask(
-            OrderActor.OrderResponse.class,
-            orderEntity,
-            Duration.ofSeconds(5),
-            (ActorRef<OrderActor.OrderResponse> adapter) -> new OrderActor.GetOrder(adapter),
-            (response, failure) -> { // Logic to handle response/failure and send internal message
-                 if (response != null) {
-                     if (response.order_id == 0 || "NotInitialized".equals(response.status)) {
-                         return new ProcessingFailed("Order not found or not initialized.");
-                     } else if ("CANCELLED".equalsIgnoreCase(response.status) || "DELIVERED".equalsIgnoreCase(response.status)) {
-                         return new ProcessingFailed("Order is already in a terminal state: " + response.status);
-                     } else {
-                         this.userId = response.user_id;
-                         this.totalPrice = response.total_price;
-                         this.itemsToRestock = response.items;
-                         // Use OrderStatusUpdated internal message to trigger next step
-                         return new OrderStatusUpdated(new OrderActor.OperationResponse(true, orderId, response.status, "Order Found"));
-                     }
-                } else {
-                    context.getLog().error("Failed to get order details for {} within timeout: {}", orderId, failure);
-                    return new ProcessingFailed("Failed to communicate with OrderActor (timeout or error).");
-                }
-            }
-        );
-        return Behaviors.same();
-    }
-
-
-    // Step 2: Order found, now attempt to update status to CANCELLED
-    private Behavior<Command> onOrderStatusUpdateAttempt() {
-        // ... (logic as before) ...
-         context.getLog().info("Order {} found. Attempting to set status to CANCELLED.", orderId);
-        context.ask(
-            OrderActor.OperationResponse.class,
-            orderEntity,
-            Duration.ofSeconds(5),
-            (ActorRef<OrderActor.OperationResponse> adapter) -> new OrderActor.UpdateStatus("CANCELLED", adapter),
-            (response, failure) -> { // Logic to handle response/failure and send internal message
-                 if (response != null && response.success) {
-                     // Use OrderDetailsReceived internal message to trigger next step (bit weird, maybe rename?)
-                     return new OrderDetailsReceived(new OrderActor.OrderResponse(0, userId, itemsToRestock, totalPrice, "CANCELLED"));
-                 } else {
-                     String errorMsg = (response != null) ? response.message : "Timeout or communication error";
-                     context.getLog().error("Failed to update order {} status to CANCELLED: {}", orderId, errorMsg);
-                     return new ProcessingFailed("Failed to update order status: " + errorMsg);
-                 }
-            }
-        );
-         return Behaviors.same();
-    }
-
-
-    // Step 3: Order status updated to CANCELLED, now restock products.
-    private Behavior<Command> onRestockProducts() {
-        // ... (logic as before) ...
-        context.getLog().info("Order {} status set to CANCELLED. Proceeding to restock products.", orderId);
-        if (itemsToRestock == null || itemsToRestock.isEmpty()) {
-             context.getLog().warn("No items found to restock for order {}. Proceeding to credit wallet.", orderId);
-             return onCreditWallet(); // Directly proceed
-        }
-        for (OrderActor.OrderItem item : itemsToRestock) { // logic to tell ProductActors
-             if (item.quantity > 0) {
-                EntityRef<ProductActor.Command> productEntity =
-                        sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
-                productEntity.tell(new ProductActor.AddStock(item.quantity));
-            }
-        }
-        context.getLog().info("Restock commands sent for order {}. Proceeding to credit wallet.", orderId);
-        return onCreditWallet(); // Proceed
-    }
-
-    // Step 4: Restocking done (or skipped), now credit the wallet.
-    private Behavior<Command> onCreditWallet() {
-         // ... (logic as before) ...
-         context.getLog().info("Attempting to credit wallet for user {} with amount {} for cancelled order {}", userId, totalPrice, orderId);
-        if (totalPrice <= 0) { // logic for zero price
-             context.getLog().warn("Total price for order {} is zero or negative ({}). Skipping wallet credit.", orderId, totalPrice);
-             context.getSelf().tell(new WalletCreditResult(true, "Skipped credit for zero/negative amount"));
-             // Need to wait for the WalletCreditResult message
-             return Behaviors.receive(Command.class)
-                    .onMessage(WalletCreditResult.class, this::onWalletCreditResult)
-                    .onMessage(ProcessingFailed.class, this::onProcessingFailed)
-                    .build();
-        }
-        String creditJson = String.format("{\"action\": \"credit\", \"amount\": %d}", totalPrice);
-        HttpRequest creditRequest = HttpRequest.newBuilder() // logic for http request
-                .uri(URI.create("http://localhost:8082/wallets/" + userId))
-                .timeout(Duration.ofSeconds(5))
-                .header("Content-Type", "application/json")
-                .PUT(HttpRequest.BodyPublishers.ofString(creditJson))
-                .build();
-        httpClient.sendAsync(creditRequest, BodyHandlers.ofString()) // async call
-            .whenCompleteAsync((resp, ex) -> { // handle response
-                if (ex != null || resp.statusCode() != 200) {
-                    String error = (ex != null) ? ex.getMessage() : "Status code " + resp.statusCode();
-                    context.getSelf().tell(new WalletCreditResult(false, "Wallet credit failed: " + error));
-                } else {
-                    context.getSelf().tell(new WalletCreditResult(true, "Wallet credited successfully"));
-                }
-            }, context.getExecutionContext());
-        // Still need to wait for the WalletCreditResult message
-         return Behaviors.receive(Command.class)
-                .onMessage(WalletCreditResult.class, this::onWalletCreditResult)
-                 .onMessage(ProcessingFailed.class, this::onProcessingFailed)
-                .build();
-    }
-
-    // Step 5: Handle wallet credit result and finalize.
-    private Behavior<Command> onWalletCreditResult(WalletCreditResult msg) {
-        // ... (logic as before) ...
-         if (msg.success) {
-            context.getLog().info("Order {} cancellation process completed successfully.", orderId);
-            pendingReplyTo.tell(new DeleteOrderResponse(true, "Order " + orderId + " cancelled successfully."));
-        } else {
-             context.getLog().error("CRITICAL: Order {} cancelled, but wallet credit failed: {}. Manual intervention may be required.", orderId, msg.message);
-             pendingReplyTo.tell(new DeleteOrderResponse(false, "Order " + orderId + " cancelled, but refund failed: " + msg.message));
-        }
-        return Behaviors.stopped();
-    }
-
-    // Handle any processing failure during the steps.
-    private Behavior<Command> onProcessingFailed(ProcessingFailed msg) {
-        // ... (logic as before) ...
-         context.getLog().error("Order {} cancellation failed: {}", orderId, msg.reason);
-        pendingReplyTo.tell(new DeleteOrderResponse(false, "Order cancellation failed: " + msg.reason));
-        return Behaviors.stopped();
-    }
-
-    // FIX 2: KEPT the second, complete createReceive() method definition.
-    // Re-define receive logic to handle state transitions based on internal messages
+    // --- Receive Logic ---
+    // The main behavior handles the initial StartDelete and internal messages sequentially
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
             .onMessage(StartDelete.class, this::onStartDelete)
-            // Message received from the ask callback in onStartDelete
-            .onMessage(OrderStatusUpdated.class, msg -> { // This message now signals success from GetOrder ask
-                if (msg.response.success) {
-                    return onOrderStatusUpdateAttempt(); // Proceed to next step
-                } else {
-                    // This case shouldn't happen if ProcessingFailed is sent correctly
-                    return onProcessingFailed(new ProcessingFailed("Order check failed unexpectedly."));
-                }
-            })
-             // Message received from the ask callback in onOrderStatusUpdateAttempt
-            .onMessage(OrderDetailsReceived.class, msg -> onRestockProducts()) // This now signals success from UpdateStatus ask
-            .onMessage(WalletCreditResult.class, this::onWalletCreditResult) // Handles result from Step 4
-            .onMessage(ProcessingFailed.class, this::onProcessingFailed) // Handles failures from asks
+            .onMessage(InitialOrderCheckResult.class, this::onInitialOrderCheckResult)
+            .onMessage(OrderStatusUpdateResult.class, this::onOrderStatusUpdateResult)
+            .onMessage(WalletCreditResult.class, this::onWalletCreditResult)
+            // Optional: Handle ProcessingFailed if used elsewhere
+            // .onMessage(ProcessingFailed.class, this::onProcessingFailed)
             .build();
     }
+
+    // --- Step Handlers ---
+
+    // Step 1: Receive StartDelete, check if OrderActor exists and is valid for cancellation.
+    private Behavior<Command> onStartDelete(StartDelete cmd) {
+        log.debug("onStartDelete: Received for orderId '{}'", cmd.orderId);
+        this.orderId = cmd.orderId;
+        this.pendingReplyTo = cmd.replyTo;
+
+        if (this.orderId == null || this.orderId.trim().isEmpty()) {
+            log.error("onStartDelete: Received StartDelete with null or empty orderId.");
+            return finalizeFailure("Invalid Order ID provided.");
+        }
+        if (this.pendingReplyTo == null) {
+            log.error("onStartDelete: Received StartDelete for order '{}' but missing replyTo actor.", orderId);
+            // Cannot reply, just stop.
+            return Behaviors.stopped();
+        }
+
+        log.info("onStartDelete: Processing request for orderId: {}", orderId);
+        try {
+            // Get reference using the String orderId
+            this.orderEntity = sharding.entityRefFor(OrderActor.TypeKey, orderId);
+        } catch (Exception e) {
+             log.error("onStartDelete: Failed to get EntityRef for order '{}': {}", orderId, e.getMessage(), e);
+             return finalizeFailure("Internal error processing order ID.");
+        }
+
+        // Ask the OrderActor for its current state
+        log.debug("onStartDelete: Asking OrderActor for details of order '{}'", orderId);
+        context.ask(
+            OrderActor.OrderResponse.class, // Expected response type
+            orderEntity,                    // Target actor
+            Duration.ofSeconds(5),          // Timeout
+            // Message factory
+            (ActorRef<OrderActor.OrderResponse> adapter) -> new OrderActor.GetOrder(adapter),
+            // Map response/failure to internal message
+            (response, failure) -> {
+                 if (response != null) {
+                     // Check if order exists and is in a cancellable state
+                     if ("NotInitialized".equals(response.status) || response.order_id == null || response.order_id.trim().isEmpty() ) {
+                          log.warn("onStartDelete: Order '{}' not found or not initialized.", orderId);
+                          return new InitialOrderCheckResult(null, "Order not found or not initialized.");
+                     } else if ("CANCELLED".equalsIgnoreCase(response.status) || "DELIVERED".equalsIgnoreCase(response.status)) {
+                          log.warn("onStartDelete: Order '{}' is already in a terminal state: {}", orderId, response.status);
+                          return new InitialOrderCheckResult(null, "Order is already in a terminal state: " + response.status);
+                     } else {
+                         // Order found and is in a valid state to be cancelled
+                         log.info("onStartDelete: Order '{}' found. Status: {}, User: {}, Price: {}. Proceeding with cancellation.",
+                                  orderId, response.status, response.user_id, response.total_price);
+                         return new InitialOrderCheckResult(response, null); // Success case
+                     }
+                } else {
+                    // Ask failed (timeout or other error)
+                    log.error("onStartDelete: Failed to get order details for '{}': {}", orderId, failure != null ? failure.getMessage() : "Unknown Ask failure", failure);
+                    return new InitialOrderCheckResult(null, "Failed to communicate with OrderActor (timeout or error).");
+                }
+            }
+        );
+
+        // Actor stays in the main behavior, waiting for InitialOrderCheckResult
+        log.debug("onStartDelete: Waiting for InitialOrderCheckResult for order '{}'", orderId);
+        return newReceiveBuilder()
+            .onMessage(StartDelete.class, this::onStartDelete)
+            .onMessage(InitialOrderCheckResult.class, this::onInitialOrderCheckResult)
+            .onMessage(OrderStatusUpdateResult.class, this::onOrderStatusUpdateResult)
+            .onMessage(WalletCreditResult.class, this::onWalletCreditResult)
+            // Optional: Handle ProcessingFailed if used elsewhere
+            // .onMessage(ProcessingFailed.class, this::onProcessingFailed)
+            .build();
+    }
+
+    // Step 2: Handle the result of the initial order check.
+    private Behavior<Command> onInitialOrderCheckResult(InitialOrderCheckResult msg) {
+        log.debug("onInitialOrderCheckResult: Received for order '{}'. Failure reason: {}", orderId, msg.failureReason);
+        if (msg.failureReason != null) {
+            // Order not found, already terminal, or communication failed
+            return finalizeFailure(msg.failureReason);
+        }
+
+        // Order is valid, store details and attempt to update status to CANCELLED
+        OrderActor.OrderResponse details = msg.orderDetails;
+        this.userId = details.user_id;
+        this.totalPrice = details.total_price;
+        this.itemsToRestock = details.items == null ? new ArrayList<>() : details.items; // Ensure list is not null
+
+        log.info("onInitialOrderCheckResult: Order '{}' validated. Attempting to set status to CANCELLED.", orderId);
+        context.ask(
+            OrderActor.OperationResponse.class, // Expected response type
+            orderEntity,                        // Target (already retrieved)
+            Duration.ofSeconds(5),              // Timeout
+            // Message factory
+            (ActorRef<OrderActor.OperationResponse> adapter) -> new OrderActor.UpdateStatus("CANCELLED", adapter),
+            // Map response/failure to internal message
+            (response, failure) -> {
+                 if (response != null && response.success) {
+                     log.info("onInitialOrderCheckResult: Order '{}' status successfully updated to CANCELLED by OrderActor.", orderId);
+                     return new OrderStatusUpdateResult(response, null); // Success case
+                 } else {
+                     String errorMsg = "Unknown error";
+                     if (failure != null) {
+                        errorMsg = "Ask Failure: " + failure.getMessage();
+                     } else if (response != null) {
+                        errorMsg = "Actor Reply Failure: " + response.message;
+                     }
+                     log.error("onInitialOrderCheckResult: Failed to update order '{}' status to CANCELLED: {}", orderId, errorMsg, failure);
+                     // Even if status update fails, maybe proceed with refund/restock? Depends on requirements.
+                     // For now, let's treat this as a failure of the delete operation.
+                     return new OrderStatusUpdateResult(null, "Failed to update order status: " + errorMsg);
+                 }
+            }
+        );
+
+        // Actor stays in the main behavior, waiting for OrderStatusUpdateResult
+        log.debug("onInitialOrderCheckResult: Waiting for OrderStatusUpdateResult for order '{}'", orderId);
+        return newReceiveBuilder()
+            .onMessage(StartDelete.class, this::onStartDelete)
+            .onMessage(InitialOrderCheckResult.class, this::onInitialOrderCheckResult)
+            .onMessage(OrderStatusUpdateResult.class, this::onOrderStatusUpdateResult)
+            .onMessage(WalletCreditResult.class, this::onWalletCreditResult)
+            // Optional: Handle ProcessingFailed if used elsewhere
+            // .onMessage(ProcessingFailed.class, this::onProcessingFailed)
+            .build();
+    }
+
+
+    // Step 3: Order status updated to CANCELLED, now restock products.
+    private Behavior<Command> onOrderStatusUpdateResult(OrderStatusUpdateResult msg) {
+        log.debug("onOrderStatusUpdateResult: Received for order '{}'. Failure reason: {}", orderId, msg.failureReason);
+        if (msg.failureReason != null) {
+            // Failed to update status. Decide if we should still try to refund/restock?
+            // For now, treat as fatal error for the delete operation.
+             return finalizeFailure(msg.failureReason);
+        }
+
+        // Status is CANCELLED in OrderActor, proceed with side effects
+        log.info("onOrderStatusUpdateResult: Order '{}' status confirmed CANCELLED. Proceeding to restock products.", orderId);
+        if (itemsToRestock == null || itemsToRestock.isEmpty()) {
+             log.warn("onOrderStatusUpdateResult: No items found to restock for order '{}'. Proceeding to credit wallet.", orderId);
+             // Proceed directly to wallet credit
+             return onCreditWallet();
+        }
+
+        log.debug("onOrderStatusUpdateResult: Sending AddStock commands for {} item types.", itemsToRestock.size());
+        for (OrderActor.OrderItem item : itemsToRestock) {
+             if (item.quantity > 0) {
+                 try {
+                    EntityRef<ProductActor.Command> productEntity =
+                            sharding.entityRefFor(ProductActor.TypeKey, String.valueOf(item.product_id));
+                    // Send AddStock (fire-and-forget)
+                    productEntity.tell(new ProductActor.AddStock(item.quantity));
+                    log.debug("onOrderStatusUpdateResult: Sent AddStock for product {} (qty: {})", item.product_id, item.quantity);
+                 } catch (Exception e) {
+                      log.error("onOrderStatusUpdateResult: Error sending AddStock for product {}: {}", item.product_id, e.getMessage(), e);
+                      // Log error but continue - best effort restock
+                 }
+            } else {
+                  log.warn("onOrderStatusUpdateResult: Skipping restock for product {} due to zero/negative quantity: {}", item.product_id, item.quantity);
+            }
+        }
+
+        log.info("onOrderStatusUpdateResult: Restock commands sent for order '{}'. Proceeding to credit wallet.", orderId);
+        // Proceed to wallet credit after initiating restock
+        return onCreditWallet();
+    }
+
+    // Step 4: Initiate wallet credit (called from previous step)
+    private Behavior<Command> onCreditWallet() {
+         log.debug("onCreditWallet: Initiating wallet credit for order '{}'. User: {}, Amount: {}", orderId, userId, totalPrice);
+         // Sanity checks
+         if (userId <= 0) {
+              log.error("onCreditWallet: Cannot credit wallet for order '{}', invalid userId: {}", orderId, userId);
+              // This indicates a flaw earlier, but fail here rather than proceed.
+              return finalizeFailure("Internal error: Missing user ID for wallet credit.");
+         }
+
+        if (totalPrice <= 0) {
+             log.warn("onCreditWallet: Total price for order '{}' is zero or negative ({}). Skipping wallet credit.", orderId, totalPrice);
+             // Send self-message to finalize successfully without credit
+             context.getSelf().tell(new WalletCreditResult(true, "Skipped credit for zero/negative amount"));
+        } else {
+            // Step 4.1: Credit Wallet via HTTP
+            log.info("onCreditWallet: Attempting to credit wallet for user {} with amount {} for cancelled order '{}'", userId, totalPrice, orderId);
+            String creditJson = String.format("{\"action\": \"credit\", \"amount\": %d}", totalPrice);
+            HttpRequest creditRequest = HttpRequest.newBuilder()
+                    .uri(URI.create("http://localhost:8082/wallets/" + userId)) // Assuming Wallet service endpoint
+                    .timeout(Duration.ofSeconds(5))
+                    .header("Content-Type", "application/json")
+                    .PUT(HttpRequest.BodyPublishers.ofString(creditJson))
+                    .build();
+
+            httpClient.sendAsync(creditRequest, BodyHandlers.ofString())
+                .whenCompleteAsync((resp, ex) -> { // Handle response asynchronously
+                    log.debug("onCreditWallet: Wallet credit response received (or exception).");
+                    if (ex != null || resp.statusCode() != 200) {
+                        String error = (ex != null) ? ex.getMessage() : "Status code " + resp.statusCode();
+                        log.error("onCreditWallet: Wallet credit HTTP failed for user {}: {}", userId, error, ex);
+                        // Send internal failure message
+                        context.getSelf().tell(new WalletCreditResult(false, "Wallet credit failed: " + error));
+                    } else {
+                        log.info("onCreditWallet: Wallet credited successfully for user {}. Amount: {}", userId, totalPrice);
+                        // Send internal success message
+                        context.getSelf().tell(new WalletCreditResult(true, "Wallet credited successfully"));
+                    }
+                }, context.getExecutionContext()); // Use Akka dispatcher
+        }
+
+        // Actor stays in the main behavior, waiting for WalletCreditResult
+        log.debug("onCreditWallet: Waiting for WalletCreditResult for order '{}'", orderId);
+        return this;
+    }
+
+    // Step 5: Handle wallet credit result and finalize.
+    private Behavior<Command> onWalletCreditResult(WalletCreditResult msg) {
+        log.debug("onWalletCreditResult: Received for order '{}'. Success: {}", orderId, msg.success);
+        if (msg.success) {
+            log.info("Order '{}' cancellation process completed successfully.", orderId);
+            return finalizeSuccess("Order " + orderId + " cancelled successfully.");
+        } else {
+             // Wallet credit failed AFTER order status was set to CANCELLED.
+             log.error("CRITICAL: Order '{}' cancelled, but wallet credit failed: {}. Manual intervention likely required.", orderId, msg.message);
+             // Reply with failure but indicate the order *is* cancelled.
+             return finalizeFailure("Order " + orderId + " cancelled, but refund failed: " + msg.message);
+        }
+    }
+
+    // --- Final Reply and Stop ---
+
+    // Helper for successful completion
+    private Behavior<Command> finalizeSuccess(String message) {
+        log.info("finalizeSuccess: Order '{}'. Message: {}", orderId, message);
+        if (pendingReplyTo != null) {
+            pendingReplyTo.tell(new DeleteOrderResponse(true, message));
+        } else {
+             log.error("finalizeSuccess: Cannot reply success for order '{}', pendingReplyTo is null!", orderId);
+        }
+        log.debug("finalizeSuccess: Stopping actor for order '{}'.", orderId);
+        return Behaviors.stopped();
+    }
+
+    // Helper for failed completion
+    private Behavior<Command> finalizeFailure(String reason) {
+        log.error("finalizeFailure: Order '{}'. Reason: {}", orderId, reason);
+        if (pendingReplyTo != null) {
+            pendingReplyTo.tell(new DeleteOrderResponse(false, reason));
+        } else {
+             log.error("finalizeFailure: Cannot reply failure for order '{}', pendingReplyTo is null!", orderId);
+        }
+        log.debug("finalizeFailure: Stopping actor for order '{}'.", orderId);
+        return Behaviors.stopped();
+    }
+
+    // REMOVED: Previous onProcessingFailed, merged logic into finalizeFailure
+    // REMOVED: Previous onRestockProducts, merged logic into onOrderStatusUpdateResult/onCreditWallet
+    // REMOVED: Previous onOrderStatusUpdateAttempt, logic integrated into onInitialOrderCheckResult/onOrderStatusUpdateResult
 }

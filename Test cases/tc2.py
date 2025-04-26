@@ -26,11 +26,11 @@ def delete_order(order_id):
     return requests.delete(MARKETPLACE_SERVICE_URL + f"/orders/{order_id}")
 
 def main():
-    user_id = 202
-    name = "Bob"
-    email = "bob@example.com"
-    product_id = 102  # ensure this exists in products.csv
-    wallet_amount = 45000  # ample funds
+    user_id = 142
+    name = "A3b"
+    email = "a2@axample.com"
+    product_id = 101  # ensure this exists in products.csv
+    wallet_amount = 1145000  # ample funds
     order_quantity = 1
 
     # Create user and initialize wallet
@@ -42,7 +42,7 @@ def main():
     put_wallet(user_id, "credit", wallet_amount)
 
     # Place an order successfully
-    time.sleep(2.5)
+    time.sleep(3.5)
     order_payload = {"user_id": user_id, "items": [{"product_id": product_id, "quantity": order_quantity}]}
     order_response = post_order(user_id, order_payload["items"])
     if order_response.status_code != 201:
@@ -50,11 +50,11 @@ def main():
         return
     order_id = order_response.json()['order_id']
     print(f"Order placed with order_id: {order_id}")
-
+    time.sleep(3.5)
     # Mark the order as delivered
     delivered_response = put_order(order_id, "DELIVERED")
     print(f"PUT order delivered response: {delivered_response.status_code}, {delivered_response.text}")
-
+    time.sleep(3.5)
     # Attempt to cancel the delivered order
     cancel_response = delete_order(order_id)
     print(f"Attempted cancellation response: {cancel_response.status_code}, {cancel_response.text}")
