@@ -8,6 +8,10 @@ import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import pods.akka.CborSerializable;
 
+// Import Jackson annotations
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     // Define message protocol for ProductActor
@@ -23,7 +27,13 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         public final String description;
         public final int price;
         public final int stockQuantity;
-        public InitializeProduct(String productId, String name, String description, int price, int stockQuantity) {
+        @JsonCreator
+        public InitializeProduct(
+            @JsonProperty("productId") String productId, // Keep as String if sent that way initially
+            @JsonProperty("name") String name,
+            @JsonProperty("description") String description,
+            @JsonProperty("price") int price,
+            @JsonProperty("stockQuantity") int stockQuantity) {
             this.productId = Integer.valueOf(productId);
             this.name = name;
             this.description = description;
@@ -34,7 +44,8 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
 
     public static final class GetProduct implements Command {
         public final akka.actor.typed.ActorRef<ProductResponse> replyTo;
-        public GetProduct(akka.actor.typed.ActorRef<ProductResponse> replyTo) {
+        @JsonCreator
+        public GetProduct(@JsonProperty("replyTo")akka.actor.typed.ActorRef<ProductResponse> replyTo) {
             this.replyTo = replyTo;
         }
     }
@@ -42,7 +53,8 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     public static final class DeductStock implements Command {
         public final int quantity;
         public final akka.actor.typed.ActorRef<OperationResponse> replyTo;
-        public DeductStock(int quantity, akka.actor.typed.ActorRef<OperationResponse> replyTo) {
+        @JsonCreator
+        public DeductStock(@JsonProperty("quantity")int quantity, @JsonProperty("replyTo")akka.actor.typed.ActorRef<OperationResponse> replyTo) {
             this.quantity = quantity;
             this.replyTo = replyTo;
         }
@@ -51,19 +63,26 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     // Command to add stock (for rollback)
     public static final class AddStock implements Command {
         public final int quantity;
-        public AddStock(int quantity) {
+        @JsonCreator
+        public AddStock(@JsonProperty("quantity")int quantity) {
             this.quantity = quantity;
         }
     }
 
     // Reply messages
-    public static final class ProductResponse {
+    public static final class ProductResponse implements CborSerializable {
         public final int id;
         public final String name;
         public final String description;
         public final int price;
         public final int stock_quantity;
-        public ProductResponse(int id, String name, String description, int price, int availableStock) {
+        @JsonCreator
+        public ProductResponse(
+                @JsonProperty("id") int id,
+                @JsonProperty("name") String name,
+                @JsonProperty("description") String description,
+                @JsonProperty("price") int price,
+                @JsonProperty("stock_quantity") int availableStock) {
             this.id = id;
             this.name = name;
             this.description = description;
@@ -72,11 +91,15 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
         }
     }
 
-    public static final class OperationResponse {
+    public static final class OperationResponse implements CborSerializable {
         public final boolean success;
         public final String message;
         public final int priceDeducted;  // computed as quantity * price if deduction succeeds
-        public OperationResponse(boolean success, String message, int priceDeducted) {
+        @JsonCreator
+        public OperationResponse(
+                @JsonProperty("success") boolean success,
+                @JsonProperty("message") String message,
+                @JsonProperty("priceDeducted") int priceDeducted) {
             this.success = success;
             this.message = message;
             this.priceDeducted = priceDeducted;
@@ -86,7 +109,8 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
     public static final class CheckStock implements Command {
         public final int quantity;
         public final ActorRef<StockCheckResponse> replyTo;
-        public CheckStock(int quantity, ActorRef<StockCheckResponse> replyTo) {
+        @JsonCreator
+        public CheckStock(@JsonProperty("quantity")int quantity, @JsonProperty("replyTo")ActorRef<StockCheckResponse> replyTo) {
             this.quantity = quantity;
             this.replyTo = replyTo;
         }
@@ -94,7 +118,8 @@ public class ProductActor extends AbstractBehavior<ProductActor.Command> {
       
       public static final class StockCheckResponse implements CborSerializable {
         public final boolean sufficient;
-        public StockCheckResponse(boolean sufficient) {
+        @JsonCreator
+        public StockCheckResponse(@JsonProperty("sufficient") boolean sufficient) {
             this.sufficient = sufficient;
         }
       }      

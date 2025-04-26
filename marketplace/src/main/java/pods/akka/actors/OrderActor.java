@@ -12,6 +12,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class OrderActor extends AbstractBehavior<OrderActor.Command> implements CborSerializable {
 
     // Message protocol for OrderActor.
@@ -29,7 +32,14 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
         public final String initialStatus;
         public final ActorRef<OperationResponse> replyTo;
 
-        public InitializeOrder(int orderId, int userId, List<OrderItem> items, int totalPrice, String initialStatus, ActorRef<OperationResponse> replyTo) {
+        @JsonCreator
+        public InitializeOrder(
+                @JsonProperty("orderId") int orderId,
+                @JsonProperty("userId") int userId,
+                @JsonProperty("items") List<OrderItem> items,
+                @JsonProperty("totalPrice") int totalPrice,
+                @JsonProperty("initialStatus") String initialStatus,
+                @JsonProperty("replyTo") ActorRef<OperationResponse> replyTo) {
             this.orderId = orderId;
             this.userId = userId;
             this.items = items;
@@ -42,7 +52,8 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     // Message to get the order details.
     public static final class GetOrder implements Command {
         public final ActorRef<OrderResponse> replyTo;
-        public GetOrder(ActorRef<OrderResponse> replyTo) {
+        @JsonCreator
+        public GetOrder(@JsonProperty("replyTo") ActorRef<OrderResponse> replyTo) {
             this.replyTo = replyTo;
         }
     }
@@ -51,7 +62,10 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
     public static final class UpdateStatus implements Command {
         public final String newStatus;
         public final ActorRef<OperationResponse> replyTo;
-        public UpdateStatus(String newStatus, ActorRef<OperationResponse> replyTo) {
+        @JsonCreator
+        public UpdateStatus(
+                @JsonProperty("newStatus") String newStatus,
+                @JsonProperty("replyTo") ActorRef<OperationResponse> replyTo) {
             this.newStatus = newStatus;
             this.replyTo = replyTo;
         }
@@ -64,7 +78,13 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
         public final List<OrderItem> items;
         public final int total_price;
         public final String status;
-        public OrderResponse(int orderId, int userId, List<OrderItem> items, int totalPrice, String status) {
+        @JsonCreator
+        public OrderResponse(
+                @JsonProperty("order_id") int orderId,
+                @JsonProperty("user_id") int userId,
+                @JsonProperty("items") List<OrderItem> items,
+                @JsonProperty("total_price") int totalPrice,
+                @JsonProperty("status") String status) {
             this.order_id = orderId;
             this.user_id = userId;
             this.items = items;
@@ -80,7 +100,12 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
         public final String status;
         public final String message;
         
-        public OperationResponse(boolean success, String order_id, String status, String message) {
+        @JsonCreator
+        public OperationResponse(
+                @JsonProperty("success") boolean success,
+                @JsonProperty("order_id") String order_id, // Keep as String if sent that way
+                @JsonProperty("status") String status,
+                @JsonProperty("message") String message) {
             this.success = success;
             this.order_id = order_id;
             this.status = status;
@@ -96,7 +121,10 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
             this.product_id = 0;
             this.quantity = 0;
         }
-        public OrderItem(int product_id, int quantity) {
+        @JsonCreator // Explicitly mark the main constructor
+        public OrderItem(
+                @JsonProperty("product_id") int product_id,
+                @JsonProperty("quantity") int quantity) {
             this.product_id = product_id;
             this.quantity = quantity;
         }
@@ -165,7 +193,7 @@ public class OrderActor extends AbstractBehavior<OrderActor.Command> implements 
             msg.replyTo.tell(new OperationResponse(false, String.valueOf(orderId), status, "Order not initialized"));
         } else if ("DELIVERED".equalsIgnoreCase(this.status) || "CANCELLED".equalsIgnoreCase(this.status)) {
             // If the order is already cancelled, do not allow any further status change.
-            msg.replyTo.tell(new OperationResponse(false, String.valueOf(orderId), status, "Order is cancelled, cannot update status"));
+            msg.replyTo.tell(new OperationResponse(false, String.valueOf(orderId), status, "Order is already cancelled or delivered, cannot update status"));
         } else {
             this.status = msg.newStatus;
             msg.replyTo.tell(new OperationResponse(true, String.valueOf(orderId), status, "Order status updated to " + status));

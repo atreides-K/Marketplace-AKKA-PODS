@@ -1,20 +1,27 @@
-# Build stage: download dependencies and build the project
-FROM maven:3.9.6-eclipse-temurin-21 AS build
+FROM maven:3.9.6-eclipse-temurin-17 AS build
 WORKDIR /app
 # Copy the Maven project file and download dependencies offline
 COPY pom.xml .
-RUN mvn dependency:go-offline
+# REMOVED --quiet to make output visible
+RUN mvn dependency:go-offline 
 # Copy the source code
 COPY src ./src
 # Build the project (skipping tests)
-RUN mvn clean install -DskipTests
+# Ensure target directory is created
+# This command should already show INFO lines
+RUN mvn clean package -DskipTests
 
 # Final stage: run the application using mvn exec:java
-FROM maven:3.9.6-eclipse-temurin-21
+# Using the same base image because Maven is needed to run the app
+FROM maven:3.9.6-eclipse-temurin-17
 WORKDIR /app
 # Copy the entire built project from the build stage
+# This includes pom.xml, src, and target/, necessary for mvn exec:java
 COPY --from=build /app /app
-# Expose the port (adjust if needed)
-EXPOSE 8080
-# Run the application using mvn exec:java
-CMD ["mvn", "exec:java"]
+
+# PHASE 2 CHANGE: Removed EXPOSE as it's irrelevant with --net=host
+# EXPOSE 8080
+
+# PHASE 2 CHANGE: Correct ENTRYPOINT to use mvn exec:java as required
+# The -Dexec.args=<port> will be appended by the docker run command
+ENTRYPOINT ["mvn", "exec:java", "-Dexec.mainClass=pods.akka.Main"]

@@ -1,8 +1,9 @@
 package pods.akka;
 
-
-
 import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
@@ -10,181 +11,139 @@ import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
+import akka.actor.typed.javadsl.Routers; // Import Routers
+import akka.actor.typed.javadsl.GroupRouter; // Import GroupRouter
+
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
-import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
-import akka.cluster.sharding.typed.javadsl.EntityContext;
+// No need for Entity/EntityContext imports here if not initializing shards
+
+// Import actor classes and messages
 import pods.akka.actors.ProductActor;
 import pods.akka.actors.DeleteOrder;
 import pods.akka.actors.OrderActor;
 import pods.akka.actors.PostOrder;
 
-
-
 public class Gateway extends AbstractBehavior<Gateway.Command> {
-	/* This class is also a skeleton class. 
-	 * Actually, Command below should be an interface. It should have the necessary number of implementing classes and corresponding event handlers. The implementing classes should have fields to hold the required elements of the http request (request path and request body), in addition to the reply-to ActorRef. The event handlers could use some suitable json parser to parse any json in the original http request body. Similarly, the Response class should be populated with the actual response.
-	 */
-	int responseNum = 0;
-    
-    private final ClusterSharding sharding;
-    
-    // Create a few ProductActor entities for demonstration purposes
 
-    
-
-	// static class Command {
-	// 	ActorRef<Response> replyTo;
-	// 	public Command(ActorRef<Response> r) {replyTo = r;}
-    // }
+    // --- Command Interface and Concrete Commands (Keep as is) ---
     public interface Command extends CborSerializable {}
-
-    public static final class GetProductById implements Command {
+    public static final class GetProductById implements Command { /* ... as before ... */
         public final String product_id;
         public final ActorRef<ProductActor.ProductResponse> replyTo;
-
-        public GetProductById(String product_id, ActorRef<ProductActor.ProductResponse> replyTo) {
+        @JsonCreator // Even if not sent across nodes, good practice
+        public GetProductById(
+             @JsonProperty("product_id") String product_id,
+             @JsonProperty("replyTo") ActorRef<ProductActor.ProductResponse> replyTo) {
             this.product_id = product_id;
             this.replyTo = replyTo;
         }
     }
-
-
-
-    public static final class PostOrderReq implements Command {
+    public static final class PostOrderReq implements Command { /* ... as before ... */
         public final int user_id;
         public final List<OrderActor.OrderItem> items;
         public final ActorRef<PostOrder.PostOrderResponse> replyTo;
-        public PostOrderReq() {
-            this.user_id = 0;
-            this.items = null;
-            this.replyTo = null;
-        }
-        public PostOrderReq(int user_id, List<OrderActor.OrderItem> items, ActorRef<PostOrder.PostOrderResponse> replyTo) {
+        // Ensure constructors are correctly defined
+        public PostOrderReq() { this.user_id = 0; this.items = null; this.replyTo = null; }
+        @JsonCreator
+        public PostOrderReq(
+             @JsonProperty("user_id") int user_id,
+             @JsonProperty("items") List<OrderActor.OrderItem> items,
+             @JsonProperty("replyTo") ActorRef<PostOrder.PostOrderResponse> replyTo) {
             this.user_id = user_id;
             this.items = items;
             this.replyTo = replyTo;
         }
     }
-
-    // New message type to get order details.
-    public static final class GetOrderById implements Command {
+    public static final class GetOrderById implements Command { /* ... as before ... */
         public final String order_id;
         public final ActorRef<OrderActor.OrderResponse> replyTo;
-        public GetOrderById(String order_id, ActorRef<OrderActor.OrderResponse> replyTo) {
+        @JsonCreator
+        public GetOrderById(
+             @JsonProperty("order_id") String order_id,
+             @JsonProperty("replyTo") ActorRef<OrderActor.OrderResponse> replyTo) {
             this.order_id = order_id;
             this.replyTo = replyTo;
         }
     }
-
-    // New: PUT /orders/{orderId} request to mark order as delivered.
-    public static final class PutOrderReq implements Command {
+    public static final class PutOrderReq implements Command { /* ... as before ... */
         public final String order_id;
         public final ActorRef<OrderActor.OperationResponse> replyTo;
-        public PutOrderReq(String order_id, ActorRef<OrderActor.OperationResponse> replyTo) {
+        @JsonCreator
+        public PutOrderReq(
+             @JsonProperty("order_id") String order_id,
+             @JsonProperty("replyTo") ActorRef<OrderActor.OperationResponse> replyTo) {
             this.order_id = order_id;
             this.replyTo = replyTo;
         }
     }
-
-    // Add this inside Gateway.java along with the other message types.
-    public static final class DeleteOrderReq implements Command {
-        public final String order_id; // The order ID as a string
+    public static final class DeleteOrderReq implements Command { /* ... as before ... */
+        public final String order_id;
         public final ActorRef<DeleteOrder.DeleteOrderResponse> replyTo;
-
-        public DeleteOrderReq(String order_id, ActorRef<DeleteOrder.DeleteOrderResponse> replyTo) {
+        @JsonCreator
+        public DeleteOrderReq(
+             @JsonProperty("order_id") String order_id,
+             @JsonProperty("replyTo") ActorRef<DeleteOrder.DeleteOrderResponse> replyTo) {
             this.order_id = order_id;
             this.replyTo = replyTo;
         }
     }
+    // Response class might not be needed if individual commands have specific reply types
+    // public static class Response { ... }
 
-    public static class Response {
-		String resp;
-		public Response(String s) {resp = s;}
-	}
-	
-	public static Behavior<Command> create() {
+    // --- State Variables ---
+    private final ClusterSharding sharding;
+    // Routers for worker pools
+    private final ActorRef<PostOrder.Command> postOrderRouter;
+    private final ActorRef<DeleteOrder.Command> deleteOrderRouter;
+
+    // --- Factory and Constructor ---
+    public static Behavior<Command> create() {
         return Behaviors.setup(context -> new Gateway(context));
     }
 
     private Gateway(ActorContext<Command> context) {
         super(context);
-            ClusterSharding sharding = ClusterSharding.get(context.getSystem());
-            sharding.init(
-                Entity.of(OrderActor.TypeKey,
-                (EntityContext<OrderActor.Command> entityContext) ->
-                        OrderActor.create(entityContext.getEntityId())
-            ));
-            // Assuming ProductActor.Command and ProductActor.TypeKey are defined elsewhere
-            
-            sharding.init(
-                Entity.of(ProductActor.TypeKey,
-                (EntityContext<ProductActor.Command> entityContext) ->
-                        ProductActor.create(entityContext.getEntityId())
-            ));
-
-
-            // load product details form CSV
-                        
-            List<String[]> loadProductDetails = LoadProduct.loadProducts("products.csv");
-
-            // Log all products in the loaded list
-            for (String[] productDetails : loadProductDetails) {
-                String product_id = productDetails[0];
-                String productName = productDetails[1];
-                String productDescription = productDetails[2];
-                double productPrice = Double.parseDouble(productDetails[3]);
-                int productQuantity = Integer.parseInt(productDetails[4]);
-
-                getContext().getLog().info("Loaded Product - ID: {}, Name: {}, Description: {},Price: {}, Quantity: {}", 
-                                           product_id, productName,
-                                           productDescription, productPrice, productQuantity);
-
-                // Create ProductActor entities for each product
-                 sharding.entityRefFor(ProductActor.TypeKey, product_id)
-                         .tell(new ProductActor.InitializeProduct(product_id, productName, productDescription, (int) productPrice, productQuantity));
-            }
-            // Create ProductActor entities with IDs 101 and 102
-            // EntityRef<ProductActor.Command> product101 = sharding.entityRefFor(ProductActor.TypeKey, "101");
-            // EntityRef<ProductActor.Command> product102 = sharding.entityRefFor(ProductActor.TypeKey, "102");
-
-   
-        
         this.sharding = ClusterSharding.get(context.getSystem());
+
+        // REMOVE Product Loading/Initialization from here
+        // It's now done partition-wise in Main.create()
+
+        // Create Group Routers
+        // These routers will discover workers registered with the Receptionist
+        this.postOrderRouter = context.spawn(Routers.group(Main.POST_ORDER_SERVICE_KEY), "post-order-router");
+        this.deleteOrderRouter = context.spawn(Routers.group(Main.DELETE_ORDER_SERVICE_KEY), "delete-order-router");
+
+        context.getLog().info("Gateway actor started and created worker routers.");
     }
-    
+
+    // --- Receive Builder ---
     @Override
     public Receive<Command> createReceive() {
-        return newReceiveBuilder().
-        onMessage(GetProductById.class, this::onGetProductById)
-        .onMessage(PostOrderReq.class, this::onPostOrderReq)
-        .onMessage(GetOrderById.class, this::onGetOrderById)
-        .onMessage(PutOrderReq.class, this::onPutOrderReq)
-        .onMessage(DeleteOrderReq.class, this::onDeleteOrderReq)
-        .build();
+        return newReceiveBuilder()
+                .onMessage(GetProductById.class, this::onGetProductById) // Stays the same
+                .onMessage(PostOrderReq.class, this::onPostOrderReq)     // MODIFIED
+                .onMessage(GetOrderById.class, this::onGetOrderById)     // Stays the same
+                .onMessage(PutOrderReq.class, this::onPutOrderReq)       // Stays the same
+                .onMessage(DeleteOrderReq.class, this::onDeleteOrderReq) // MODIFIED
+                .build();
     }
-    
-    private Behavior<Command> onGetProductById(GetProductById req) {
 
+    // --- Message Handlers ---
+
+    // Handlers for Sharded Entities (GetProduct, GetOrder, PutOrder) remain the same
+    private Behavior<Command> onGetProductById(GetProductById req) {
         EntityRef<ProductActor.Command> productEntity =
             sharding.entityRefFor(ProductActor.TypeKey, req.product_id);
-        
+        // Forward the request including the original replyTo
         productEntity.tell(new ProductActor.GetProduct(req.replyTo));
         return this;
-      }
-      private Behavior<Command> onPostOrderReq(PostOrderReq req) {
-        
-        ActorRef<PostOrder.Command> postOrderWorker = getContext().spawnAnonymous(PostOrder.create());
+    }
 
-        
-        postOrderWorker.tell(new PostOrder.StartOrder(req.user_id,req.items,req.replyTo));
-        // productEntity.tell(new ProductActor.GetProduct(req.replyTo));
-        return this;
-      }
-
-      private Behavior<Command> onGetOrderById(GetOrderById req) {
+     private Behavior<Command> onGetOrderById(GetOrderById req) {
         EntityRef<OrderActor.Command> orderEntity =
             sharding.entityRefFor(OrderActor.TypeKey, req.order_id);
+        // Forward the request including the original replyTo
         orderEntity.tell(new OrderActor.GetOrder(req.replyTo));
         return this;
     }
@@ -192,14 +151,26 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
     private Behavior<Command> onPutOrderReq(PutOrderReq req) {
         EntityRef<OrderActor.Command> orderEntity =
             sharding.entityRefFor(OrderActor.TypeKey, req.order_id);
+        // Forward the request including the original replyTo
         orderEntity.tell(new OrderActor.UpdateStatus("DELIVERED", req.replyTo));
         return this;
     }
 
+
+    // MODIFIED: Use Router for PostOrder
+    private Behavior<Command> onPostOrderReq(PostOrderReq req) {
+        getContext().getLog().info("Gateway forwarding PostOrderReq for user {} to router", req.user_id);
+        // Send the request to the router. The router distributes it to a worker.
+        // The worker will use req.replyTo to respond back to the original asker (Handler).
+        postOrderRouter.tell(new PostOrder.StartOrder(req.user_id, req.items, req.replyTo));
+        return this;
+    }
+
+    // MODIFIED: Use Router for DeleteOrder
     private Behavior<Command> onDeleteOrderReq(DeleteOrderReq req) {
-        // Spawn a DeleteOrder actor to process this request.
-        ActorRef<DeleteOrder.Command> deleteOrderWorker = getContext().spawnAnonymous(DeleteOrder.create());
-        deleteOrderWorker.tell(new DeleteOrder.StartDelete(req.order_id, req.replyTo));
+         getContext().getLog().info("Gateway forwarding DeleteOrderReq for order {} to router", req.order_id);
+         // Send the request to the router.
+        deleteOrderRouter.tell(new DeleteOrder.StartDelete(req.order_id, req.replyTo));
         return this;
     }
 }

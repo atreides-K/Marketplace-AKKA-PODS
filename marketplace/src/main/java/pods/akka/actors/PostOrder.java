@@ -9,6 +9,7 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
+import pods.akka.CborSerializable;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 
 import java.net.URI;
@@ -20,18 +21,25 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class PostOrder extends AbstractBehavior<PostOrder.Command> {
 
     // Command protocol
     public interface Command {}
 
     // Initial command to start order processing.
-    public static final class StartOrder implements Command {
+    public static final class StartOrder implements Command, CborSerializable {
         // public final int orderId;
         public final int userId;
         public final List<OrderActor.OrderItem> items;
         public final ActorRef<PostOrderResponse> replyTo;
-        public StartOrder(int userId, List<OrderActor.OrderItem> items, ActorRef<PostOrderResponse> replyTo) {
+        @JsonCreator // Add annotations
+        public StartOrder(
+                @JsonProperty("userId") int userId,
+                @JsonProperty("items") List<OrderActor.OrderItem> items,
+                @JsonProperty("replyTo") ActorRef<PostOrderResponse> replyTo) {
             // this.orderId = orderId;
             this.userId = userId;
             this.items = items;
@@ -134,12 +142,16 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
     }
 
       // The response message sent back to the Gateway, now including complete order details.
-      public static final class PostOrderResponse {
+      public static final class PostOrderResponse implements CborSerializable {
         public final boolean success;
         public final String message;
         public final OrderActor.OrderResponse orderResponse;
 
-        public PostOrderResponse(boolean success, String message, OrderActor.OrderResponse orderResponse) {
+        @JsonCreator
+        public PostOrderResponse(
+            @JsonProperty("success") boolean success,
+            @JsonProperty("message") String message,
+            @JsonProperty("orderResponse") OrderActor.OrderResponse orderResponse) {
             this.success = success;
             this.message = message;
             this.orderResponse = orderResponse;
@@ -205,7 +217,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
         getContext().getLog().info("Starting order processing for and userId {}", userId);
 
         HttpRequest userRequest = HttpRequest.newBuilder()
-                .uri(URI.create("http://host.docker.internal:8080/users/" + userId))
+                //.uri(URI.create("http://host.docker.internal:8080/users/" + userId))
+                .uri(URI.create("http://localhost:8080/users/" + userId))
                 .timeout(Duration.ofSeconds(5))
                 .GET()
                 .build();
@@ -315,7 +328,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 getContext().getLog().info("Final total price after discount (if any): {}", totalPriceFromProducts);
                 // Proceed with wallet check...
                 HttpRequest walletCheckRequest = HttpRequest.newBuilder()
-                    .uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
+                    //.uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
+                    .uri(URI.create("http://localhost:8082/wallets/" + userId))
                     .timeout(Duration.ofSeconds(5))
                     .GET()
                     .build();
@@ -353,7 +367,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
                 // Step 6: Debit the wallet.
                 String debitJson = "{\"action\": \"debit\", \"amount\": " + totalPriceFromProducts + "}";
                 HttpRequest debitRequest = HttpRequest.newBuilder()
-                        .uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
+                        //.uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
+                        .uri(URI.create("http://localhost:8082/wallets/" + userId))
                         .timeout(Duration.ofSeconds(5))
                         .header("Content-Type", "application/json")
                         .PUT(HttpRequest.BodyPublishers.ofString(debitJson))
@@ -387,7 +402,8 @@ public class PostOrder extends AbstractBehavior<PostOrder.Command> {
             // Step 8: Update discount status.
             String discountJson = "{\"id\": " + userId + ", \"discount_availed\": true}";
             HttpRequest discountRequest = HttpRequest.newBuilder()
-                    .uri(URI.create("http://host.docker.internal:8080/users/" + userId + "/discount"))
+                    //.uri(URI.create("http://host.docker.internal:8080/users/" + userId + "/discount"))
+                    .uri(URI.create("http://localhost:8080/users/" + userId + "/discount"))
                     .timeout(Duration.ofSeconds(5))
                     .header("Content-Type", "application/json")
                     .PUT(HttpRequest.BodyPublishers.ofString(discountJson))

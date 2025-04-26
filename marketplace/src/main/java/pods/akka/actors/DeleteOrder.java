@@ -9,6 +9,7 @@ import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
+import pods.akka.CborSerializable;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -17,16 +18,22 @@ import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.Optional;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
 
     // Command protocol
     public interface Command {}
 
     // Initial command to start order deletion.
-    public static final class StartDelete implements Command {
+    public static final class StartDelete implements Command, CborSerializable {
         public final String orderId;
         public final ActorRef<DeleteOrderResponse> replyTo;
-        public StartDelete(String orderId, ActorRef<DeleteOrderResponse> replyTo) {
+        @JsonCreator // Add annotations
+        public StartDelete(
+            @JsonProperty("orderId") String orderId,
+            @JsonProperty("replyTo") ActorRef<DeleteOrderResponse> replyTo) {
             this.orderId = orderId;
             this.replyTo = replyTo;
         }
@@ -82,10 +89,13 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     }
 
     // Response sent back to the Gateway.
-    public static final class DeleteOrderResponse {
+    public static final class DeleteOrderResponse implements CborSerializable {
         public final boolean success;
         public final String message;
-        public DeleteOrderResponse(boolean success, String message) {
+        @JsonCreator
+        public DeleteOrderResponse(
+            @JsonProperty("success") boolean success,
+            @JsonProperty("message") String message) {
             this.success = success;
             this.message = message;
         }
@@ -198,7 +208,8 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
         userId = details.user_id; // Get userId from order details
         getContext().getLog().info("Crediting wallet for user {} with amount {}", userId, totalPrice);
         HttpRequest creditRequest = HttpRequest.newBuilder()
-                .uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
+             // .uri(URI.create("http://host.docker.internal:8082/wallets/" + userId))
+                .uri(URI.create("http://localhost:8082/wallets/" + userId))
                 .timeout(Duration.ofSeconds(5))
                 .header("Content-Type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(creditJson))

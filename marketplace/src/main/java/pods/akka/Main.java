@@ -1,20 +1,30 @@
 package pods.akka;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
+import akka.actor.typed.receptionist.Receptionist;
+import akka.actor.typed.receptionist.ServiceKey;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
+import com.typesafe.config.ConfigValueFactory;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
@@ -22,423 +32,543 @@ import akka.actor.typed.Behavior;
 import akka.actor.typed.Scheduler;
 import akka.actor.typed.javadsl.AskPattern;
 import akka.actor.typed.javadsl.Behaviors;
-import pods.akka.Gateway;
+import akka.actor.typed.javadsl.Routers;
+import akka.actor.typed.javadsl.GroupRouter;
+
+// Import actor classes
 import pods.akka.actors.ProductActor;
 import pods.akka.actors.DeleteOrder;
 import pods.akka.actors.OrderActor;
 import pods.akka.actors.PostOrder;
 
-// Main class
+// Sharding imports
+import akka.cluster.sharding.typed.javadsl.ClusterSharding;
+import akka.cluster.sharding.typed.javadsl.Entity;
+import akka.cluster.sharding.typed.javadsl.EntityRef;
+import akka.cluster.sharding.typed.javadsl.EntityContext;
+
+
 public class Main {
 
-	static ActorRef<Gateway.Command> gateway;
-	static Duration askTimeout;
-	static Scheduler scheduler;
-	static class Handler implements HttpHandler {
+    static ActorRef<Gateway.Command> gateway = null; // Nullable, only set on primary
+    static Duration askTimeout;
+    static Scheduler scheduler;
+
+    // ServiceKeys for worker discovery
+    public static final ServiceKey<PostOrder.Command> POST_ORDER_SERVICE_KEY =
+            ServiceKey.create(PostOrder.Command.class, "postOrderWorker");
+    public static final ServiceKey<DeleteOrder.Command> DELETE_ORDER_SERVICE_KEY =
+            ServiceKey.create(DeleteOrder.Command.class, "deleteOrderWorker");
+
+    // --- Static Handler Class ---
+    static class Handler implements HttpHandler {
+        private static final ObjectMapper objectMapper = new ObjectMapper();
+
         @Override
         public void handle(HttpExchange req) throws IOException {
-            // only has GET request
-            System.out.println("Received request: " + req.getRequestMethod());
-            if("GET".equals(req.getRequestMethod())){
-                	// parse the request path and body
-                	// create a Product.Command object
-                	// send it to the gateway actor
-                	
-                    // i think theis Gateway.Command is generic example will subs with an actual one here GetProductCommand
-                    String[] pathParts = req.getRequestURI().getPath().split("/");
-                    if (pathParts.length > 1) {
-                        ObjectMapper objectMapper = new ObjectMapper();
-                        String secondWord = pathParts[1];
-                        if ("products".equals(secondWord)) {                            
-                            // Handle product-related requests
-                            // This is already implemented below
-                            String productId;
-                                if (pathParts.length > 2) {
-                                    // Extract the productId from the path
-                                    try {
-                                        // check if the id is indeed an integer
-                                        Integer.parseInt(pathParts[2]);
-                                        productId = pathParts[2];
-                                    } catch (NumberFormatException e) {
-                                        req.sendResponseHeaders(400, 0); // Bad Request
-                                        req.getResponseBody().close();
-                                        return;
-                                    }
-                                    // Use productId not there as needed
-                                } else {
-                                    req.sendResponseHeaders(400, 0); // Bad Request
-                                    req.getResponseBody().close();
-                                    return;
-                                }
-                                CompletionStage<ProductActor.ProductResponse> compl = 
-                                        AskPattern.ask(
-                                            gateway,
-                                            (ActorRef<ProductActor.ProductResponse> ref) -> new Gateway.GetProductById(productId, ref), 
-                                            askTimeout,
-                                            scheduler);
-
-
-                                
-                                        compl.thenAccept((ProductActor.ProductResponse r) -> {
-                                try {
-                                    // Convert the response object to JSON
-                                    String jsonResponse = objectMapper.writeValueAsString(r);
-                                    
-                                    // Set response headers
-                                    req.getResponseHeaders().set("Content-Type", "application/json");
-                                    if (r.price > -1) {
-                                        req.sendResponseHeaders(200, jsonResponse.length());
-                                    } else {
-                                        req.sendResponseHeaders(404, (long)-1);
-                                    }
-                                    // Send response
-                                    OutputStream os = req.getResponseBody();
-                                    os.write(jsonResponse.getBytes());
-                                    os.flush();
-                                    req.getResponseBody().close();
-                                } catch (IOException e) {
-                                    e.printStackTrace();
-                                }
-                            });
-
-
-                        } else if ("orders".equals(secondWord)) {
-                    if (pathParts.length > 2) {
-                        // New: handle GET /orders/{orderId}
-                        String orderId = pathParts[2];
-                        CompletionStage<OrderActor.OrderResponse> compl =
-                            AskPattern.ask(gateway,
-                                (ActorRef<OrderActor.OrderResponse> ref) -> new Gateway.GetOrderById(orderId, ref),
-                                askTimeout, scheduler);
-                        compl.thenAccept(orderResp -> {
-                            try {
-                                String jsonResponse = objectMapper.writeValueAsString(orderResp);
-                                OutputStream os = req.getResponseBody();
-                                req.getResponseHeaders().set("Content-Type", "application/json");
-                                if(orderResp.order_id != 0) {
-                                    req.sendResponseHeaders(200, jsonResponse.getBytes().length);
-                                } else {
-                                    req.sendResponseHeaders(404, -1);
-                                }
-                                os.write(jsonResponse.getBytes());
-                                
-                                os.close();
-                            } catch (IOException e) {
-                                e.printStackTrace();
-                            }
-                        });
-                    } else {
-                        req.sendResponseHeaders(400, 0);
-                        req.getResponseBody().close();
-                    }
-                }else if ("orders".equals(secondWord)) {
-                            req.sendResponseHeaders(501, 0); // Not Implemented
-                            req.getResponseBody().close();
-                            return;
-                        } else {
-                            req.sendResponseHeaders(404, 0); // Not Found
-                            req.getResponseBody().close();
-                            return;
-                        }
-                    } else {
-                        req.sendResponseHeaders(400, 0); // Bad Request
-                        req.getResponseBody().close();
-                        return;
-                    }
-                    
-
-            } else if ("POST".equals(req.getRequestMethod())) {
-                // Handle POST requests
-                // You can implement similar logic for handling POST requests here
-                System.out.println("Handling POST request");
-                String[] pathParts = req.getRequestURI().getPath().split("/");
-                if (pathParts.length == 2) {
-
-                    String secondWord = pathParts[1];
-                    System.out.println("Second word: " + secondWord);
-                    if ("orders".equals(secondWord)) {
-                        // Handle order-related POST requests
-                        // This is already implemented below
-                        System.out.println("inside orderPost" );
-                                ObjectMapper objectMapper = new ObjectMapper();
-                                Gateway.PostOrderReq orderRequest;
-                                try {
-                                    // Parse the request body into OrderRequest
-
-                                    orderRequest = objectMapper.readValue(req.getRequestBody(), Gateway.PostOrderReq.class);
-                                } catch (IOException e) {
-                                    System.err.println("Error parsing request body: " + e.getMessage());
-                                    req.sendResponseHeaders(400, 0); // Bad Request
-                                    req.getResponseBody().close();
-                                    return;
-                                }
-                                System.out.println("Order Request: " + orderRequest);
-                                System.out.println("Order Request: " + orderRequest.user_id);
-                                orderRequest.items.forEach(item -> {
-                                    System.out.println("Product ID: " + item.product_id);
-                                    System.out.println("Quantity: " + item.quantity);
-                                });
-                                System.out.println("Order Request: " + orderRequest.user_id);
-                                // Send the parsed OrderRequest to the gateway actor                   
-                                CompletionStage<PostOrder.PostOrderResponse> compl = 
-                                        AskPattern.ask(
-                                            gateway,
-                                            (ActorRef<PostOrder.PostOrderResponse> ref) -> new Gateway.PostOrderReq(orderRequest.user_id,orderRequest.items, ref), 
-                                            askTimeout,
-                                            scheduler);
-
-
-                                
-                                        compl.thenAccept((PostOrder.PostOrderResponse r) -> {
-                                
-                                    System.out.println("PostOrder Response: " + r);
-                                    try (OutputStream os = req.getResponseBody()) {
-                                        // Convert the response object to JSON
-                                        String jsonResponse = objectMapper.writeValueAsString(r);
-                                        
-                                        // Set response headers
-                                        req.getResponseHeaders().set("Content-Type", "application/json");
-                                        if(r.success){
-                                            String orderResponse = objectMapper.writeValueAsString(r.orderResponse);
-                                        req.sendResponseHeaders(201, orderResponse.getBytes().length);
-                                        // Send response
-                                        os.write(orderResponse.getBytes());
-                                        }
-                                        else{
-                                            req.sendResponseHeaders(400, -1);
-                                        os.write(jsonResponse.getBytes());
-                                        }    
-                                    } catch (IOException e) {
-                                        System.err.println("Error writing response: " + e.getMessage());
-                                        e.printStackTrace();
-                                    }
-                                 
-                            });
-
-
-                        // req.getResponseBody().close();
-                        return;
-
-                        // Map<String, Object> dummyResponse = new HashMap<>();
-                        // dummyResponse.put("status", "success");
-                        // dummyResponse.put("message", "Dummy response from server");
-                        // dummyResponse.put("data", Map.of("id", 123, "name", "Sample Product"));
-        
-                        // // Convert response to JSON
-                        // ObjectMapper objectMapper = new ObjectMapper();
-                        // String jsonResponse = objectMapper.writeValueAsString(dummyResponse);
-                        // byte[] jsonBytes = jsonResponse.getBytes(StandardCharsets.UTF_8);
-        
-                        // // Set response headers
-                        // req.getResponseHeaders().set("Content-Type", "application/json");
-                        // req.sendResponseHeaders(200, jsonBytes.length);
-        
-                        // // Write response
-                        // try (OutputStream os = req.getResponseBody()) {
-                        //     os.write(jsonBytes);
-                        // }
-                       
-                    } else {
-                        System.err.println("Error writing response:asdfg " );
-                        req.sendResponseHeaders(400, 0); // Bad Request
-                        req.getResponseBody().close();
-                        return;
-                    }
-                } else {
-                    System.err.println("Error writing response:1234 " );
-                    req.sendResponseHeaders(400, 0); // Bad Request
-                    req.getResponseBody().close();
-                    return;
-                }
-               
-            } else if ("PUT".equals(req.getRequestMethod())) {
-                ObjectMapper objectMapper = new ObjectMapper();
-                String[] pathParts = req.getRequestURI().getPath().split("/");
-                // Handle PUT /orders/{orderId} to mark an order as delivered.
-                if (pathParts.length > 2 && "orders".equals(pathParts[1])) {
-                    String orderId = pathParts[2];
-                    // Parse and validate request body.
-                    try {
-                        // Read the request body as a Map.
-                        Map<String, Object> requestBody = objectMapper.readValue(req.getRequestBody(), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
-                        // Validate required fields.
-                        if (!requestBody.containsKey("order_id") || !requestBody.containsKey("status")) {
-                            req.sendResponseHeaders(400, 0);
-                            req.getResponseBody().close();
-                            return;
-                        }
-                        String bodyOrderId = requestBody.get("order_id").toString();
-                        String status = requestBody.get("status").toString();
-                        // Check that the order_id in the body matches the URI and status is exactly "DELIVERED".
-                        if (!bodyOrderId.equals(orderId) || !"DELIVERED".equalsIgnoreCase(status)) {
-                            req.sendResponseHeaders(400, 0);
-                            req.getResponseBody().close();
-                            return;
-                        }
-                    } catch (Exception e) {
-                        req.sendResponseHeaders(400, 0);
-                        req.getResponseBody().close();
-                        return;
-                    }
-                    
-                    // If validation passes, send update request via gateway.
-                    CompletionStage<OrderActor.OperationResponse> compl =
-                        AskPattern.ask(gateway,
-                            (ActorRef<OrderActor.OperationResponse> ref) -> new Gateway.PutOrderReq(orderId, ref),
-                            askTimeout, scheduler);
-                    compl.thenAccept(response -> {
-                        try {
-                            // Create a minimal response containing only order_id and status.
-                            Map<String, Object> minimalResponse = new HashMap<>();
-                            minimalResponse.put("order_id", response.order_id);
-                            minimalResponse.put("status", response.status);
-                            String jsonResponse = objectMapper.writeValueAsString(minimalResponse);
-                            req.getResponseHeaders().set("Content-Type", "application/json");
-                            int statusCode = response.success ? 200 : 400;
-                            req.sendResponseHeaders(statusCode, jsonResponse.getBytes(StandardCharsets.UTF_8).length);
-                            try (OutputStream os = req.getResponseBody()) {
-                                os.write(jsonResponse.getBytes(StandardCharsets.UTF_8));
-                            }
-                        } catch(IOException e) {
-                            e.printStackTrace();
-                        }
-                    });
-                } else {
-                    req.sendResponseHeaders(400, 0);
-                    req.getResponseBody().close();
-                }
-            }
-             else if ("DELETE".equals(req.getRequestMethod())) {
-            // Handle DELETE /orders/{orderId}?user_id=123
-            ObjectMapper objectMapper = new ObjectMapper();
-            String[] pathParts = req.getRequestURI().getPath().split("/");
-            if (pathParts.length > 2 && "orders".equals(pathParts[1])) {
-                String orderId = pathParts[2];
-                // Extract user_id from query parameter, e.g., ?user_id=123
-                String query = req.getRequestURI().getQuery();
-                CompletionStage<DeleteOrder.DeleteOrderResponse> compl =
-                    AskPattern.ask(
-                        gateway,
-                        (ActorRef<DeleteOrder.DeleteOrderResponse> ref) -> new Gateway.DeleteOrderReq(orderId, ref),
-                        askTimeout, scheduler);
-                compl.thenAccept(deleteResp -> {
-                    try {
-                        String jsonResponse = objectMapper.writeValueAsString(deleteResp);
-                        req.getResponseHeaders().set("Content-Type", "application/json");
-                        if (deleteResp.success) {
-                            req.sendResponseHeaders(200, jsonResponse.getBytes().length);
-                        } else {
-                            req.sendResponseHeaders(400, -1); // Not Found
-                        }
-                        OutputStream os = req.getResponseBody();
-                        os.write(jsonResponse.getBytes());
-                        os.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                });
-            } else {
-                req.sendResponseHeaders(400, 0);
-                req.getResponseBody().close();
-            }
-        } else {
-                System.err.println("Error writing response: 123" );
-                req.sendResponseHeaders(400, 0); // Method Not Allowed
-                req.getResponseBody().close();
+            // Ensure this node should handle HTTP requests (primary node check)
+            if (gateway == null) {
+                // Should only happen if configuration is wrong or during brief startup/shutdown race
+                System.err.println("FATAL: HTTP request received but Gateway actor is null. Check node configuration.");
+                // Avoid sending response if gateway isn't ready, client will likely timeout
+                 req.close(); // Close the connection quickly
                 return;
-                    
-                	
+            }
+
+            String path = req.getRequestURI().getPath();
+            String method = req.getRequestMethod();
+            System.out.println("Received request: " + method + " " + path); // Basic Logging
+
+            try {
+                switch (method) {
+                    case "GET":
+                        handleGet(req, path);
+                        break;
+                    case "POST":
+                        handlePost(req, path);
+                        break;
+                    case "PUT":
+                        handlePut(req, path);
+                        break;
+                    case "DELETE":
+                        handleDelete(req, path);
+                        break;
+                    default:
+                        System.err.println("Unsupported method: " + method);
+                        sendErrorResponse(req, 405, "Method Not Allowed");
+                        break;
+                }
+            } catch (Exception e) {
+                System.err.println("Unexpected error handling request " + method + " " + path + ": " + e.getMessage());
+                e.printStackTrace();
+                if (req.getResponseCode() == -1) {
+                     try { sendErrorResponse(req, 500, "Internal Server Error"); }
+                     catch (IOException ioEx) { /* Ignore secondary error */ }
+                }
             }
         }
-    }
-    // static class OrderHandler implements HttpHandler {
-    //     @Override
-    //     public void handle(HttpExchange req) throws IOException {
-    //     	// map respective req by their path to the respective command class
-    //         // fetch the req body here?
-            
+
+        // --- GET Request Handler ---
+        private void handleGet(HttpExchange req, String path) {
+            String[] parts = path.split("/");
+            // Path: /products/{productId}
+            if (parts.length == 3 && "products".equals(parts[1])) {
+                String productIdStr = parts[2];
+                try {
+                    // Basic validation: is it potentially an integer?
+                    Integer.parseInt(productIdStr);
+                    System.out.println("Handler asking Gateway for product: " + productIdStr);
+                    CompletionStage<ProductActor.ProductResponse> stage = AskPattern.ask(
+                            gateway,
+                            (ActorRef<ProductActor.ProductResponse> ref) -> new Gateway.GetProductById(productIdStr, ref),
+                            askTimeout,
+                            scheduler);
+
+                    handleActorResponse(req, stage, (httpExchange, response) -> {
+                        try { // Handle IOException from send calls
+                            if (response.price >= 0) { // Found
+                                sendJsonResponse(httpExchange, 200, response);
+                            } else { // Not found by actor logic
+                                System.err.println("Product not found by actor: " + productIdStr);
+                                sendErrorResponse(httpExchange, 404, "Product not found");
+                            }
+                        } catch (IOException e) {
+                            System.err.println("IOException sending GET /products/{id} response: " + e.getMessage());
+                        }
+                    });
+                } catch (NumberFormatException e) {
+                     System.err.println("Invalid product ID format: " + productIdStr);
+                     try { sendErrorResponse(req, 400, "Invalid product ID format"); }
+                     catch (IOException ioEx) { System.err.println("IOException sending 400 error: " + ioEx.getMessage()); }
+                }
+            // Path: /orders/{orderId}
+            } else if (parts.length == 3 && "orders".equals(parts[1])) {
+                String orderIdStr = parts[2];
+                 try {
+                    // Basic validation: is it potentially an integer?
+                    Integer.parseInt(orderIdStr);
+                    System.out.println("Handler asking Gateway for order: " + orderIdStr);
+                    CompletionStage<OrderActor.OrderResponse> stage = AskPattern.ask(
+                            gateway,
+                            (ActorRef<OrderActor.OrderResponse> ref) -> new Gateway.GetOrderById(orderIdStr, ref),
+                            askTimeout,
+                            scheduler);
+
+                    handleActorResponse(req, stage, (httpExchange, response) -> {
+                        try { // Handle IOException from send calls
+                            if (response.order_id != 0 && !"NotInitialized".equals(response.status)) { // Found
+                                sendJsonResponse(httpExchange, 200, response);
+                            } else { // Not found or not initialized
+                                System.err.println("Order not found by actor: " + orderIdStr);
+                                sendErrorResponse(httpExchange, 404, "Order not found");
+                            }
+                        } catch (IOException e) {
+                             System.err.println("IOException sending GET /orders/{id} response: " + e.getMessage());
+                        }
+                    });
+                 } catch (NumberFormatException e) {
+                     System.err.println("Invalid order ID format: " + orderIdStr);
+                     try { sendErrorResponse(req, 400, "Invalid order ID format"); }
+                     catch (IOException ioEx) { System.err.println("IOException sending 400 error: " + ioEx.getMessage()); }
+                 }
+            } else {
+                System.err.println("Unsupported GET path: " + path);
+                try { sendErrorResponse(req, 404, "Not Found"); }
+                catch (IOException ioEx) { System.err.println("IOException sending 404 error: " + ioEx.getMessage()); }
+            }
+        }
+
+        // --- POST Request Handler ---
+        private void handlePost(HttpExchange req, String path) {
+            String[] parts = path.split("/");
+            // Path: /orders
+            if (parts.length == 2 && "orders".equals(parts[1])) {
+                //Gateway.PostOrderReq orderRequest = null;
+                try (InputStream is = req.getRequestBody()) {
+                    Gateway.PostOrderReq parsedOrderRequest = objectMapper.readValue(is, Gateway.PostOrderReq.class);
+                    // Validation
+                    if (parsedOrderRequest.items == null || parsedOrderRequest.items.isEmpty()) {
+                        throw new IllegalArgumentException("Order items cannot be empty.");
+                    }
+                    if (parsedOrderRequest.user_id <= 0) {
+                         throw new IllegalArgumentException("Invalid user ID.");
+                    }
+                    for(OrderActor.OrderItem item : parsedOrderRequest.items) {
+                        if (item.product_id <= 0 || item.quantity <= 0) {
+                             throw new IllegalArgumentException("Invalid product ID or quantity in items.");
+                        }
+                    }
+                    final Gateway.PostOrderReq finalOrderRequest = parsedOrderRequest;
+                    // If validation passed, proceed with Ask
+                    System.out.println("Handler asking Gateway to post order for user: " + finalOrderRequest.user_id);
+                    CompletionStage<PostOrder.PostOrderResponse> stage = AskPattern.ask(
+                            gateway,
+                            // Use the parsed and validated orderRequest object
+                            (ActorRef<PostOrder.PostOrderResponse> ref) -> new Gateway.PostOrderReq(finalOrderRequest.user_id, finalOrderRequest.items, ref),
+                            askTimeout,
+                            scheduler);
+
+                    handleActorResponse(req, stage, (httpExchange, response) -> {
+                        try { // Handle IOException from send calls
+                            if (response.success) {
+                                sendJsonResponse(httpExchange, 201, response.orderResponse); // 201 Created
+                            } else {
+                                System.err.println("Failed to create order: " + response.message);
+                                // Use 400 as per Project 1 spec for most creation failures
+                                sendJsonResponse(httpExchange, 400, Map.of("success", false, "message", response.message));
+                            }
+                        } catch (IOException e) {
+                            System.err.println("IOException sending POST /orders response: " + e.getMessage());
+                        }
+                    });
+
+                } catch (JsonProcessingException | IllegalArgumentException e) {
+                    System.err.println("Invalid POST /orders request body: " + e.getMessage());
+                    try { sendErrorResponse(req, 400, "Bad Request: Invalid order data - " + e.getMessage()); }
+                    catch (IOException ioEx) { System.err.println("IOException sending 400 error: " + ioEx.getMessage()); }
+                } catch (IOException e) { // Catch IO error from reading body stream
+                    System.err.println("IO Error reading POST request body: " + e.getMessage());
+                    try { sendErrorResponse(req, 500, "Error reading request"); }
+                    catch (IOException ioEx) { System.err.println("IOException sending 500 error: " + ioEx.getMessage()); }
+                }
+            } else {
+                 System.err.println("Unsupported POST path: " + path);
+                 try { sendErrorResponse(req, 404, "Not Found"); }
+                 catch (IOException ioEx) { System.err.println("IOException sending 404 error: " + ioEx.getMessage()); }
+            }
+        }
+
+        // --- PUT Request Handler ---
+        private void handlePut(HttpExchange req, String path) {
+            String[] parts = path.split("/");
+            // Path: /orders/{orderId} (Mark as Delivered)
+            if (parts.length == 3 && "orders".equals(parts[1])) {
+                 String orderIdStr = parts[2];
+                 try {
+                    // Validate orderId format
+                     Integer.parseInt(orderIdStr);
+
+                     Map<String, Object> requestBody;
+                     try (InputStream is = req.getRequestBody()) {
+                         requestBody = objectMapper.readValue(is, new TypeReference<Map<String, Object>>() {});
+                     }
+
+                     // Validate request body for DELIVERED status update
+                     if (!requestBody.containsKey("order_id") || !requestBody.containsKey("status")) {
+                         throw new IllegalArgumentException("Missing 'order_id' or 'status' in request body.");
+                     }
+                     String bodyOrderId = String.valueOf(requestBody.get("order_id")); // Convert safely
+                     String status = String.valueOf(requestBody.get("status"));
+
+                     if (!orderIdStr.equals(bodyOrderId)) {
+                          throw new IllegalArgumentException("Order ID in path does not match Order ID in body.");
+                     }
+                     if (!"DELIVERED".equalsIgnoreCase(status)) {
+                         throw new IllegalArgumentException("Invalid status for PUT request. Expected 'DELIVERED'.");
+                     }
+
+                     // If validation passed, proceed with Ask
+                     System.out.println("Handler asking Gateway to mark order as delivered: " + orderIdStr);
+                     CompletionStage<OrderActor.OperationResponse> stage = AskPattern.ask(
+                            gateway,
+                            (ActorRef<OrderActor.OperationResponse> ref) -> new Gateway.PutOrderReq(orderIdStr, ref),
+                            askTimeout,
+                            scheduler);
+
+                     handleActorResponse(req, stage, (httpExchange, response) -> {
+                         try { // Handle IOException from send calls
+                             if (response.success) {
+                                sendJsonResponse(httpExchange, 200, Map.of(
+                                    "order_id", response.order_id,
+                                    "status", response.status,
+                                    "message", response.message
+                                ));
+                             } else {
+                                 System.err.println("Failed to mark order " + orderIdStr + " as delivered: " + response.message);
+                                 // 400 suggests order not found or not in PLACED state
+                                 sendJsonResponse(httpExchange, 400, Map.of("success", false, "message", response.message));
+                             }
+                         } catch (IOException e) {
+                             System.err.println("IOException sending PUT /orders/{id} response: " + e.getMessage());
+                         }
+                     });
+
+                 } catch (NumberFormatException e) {
+                     System.err.println("Invalid order ID format: " + orderIdStr);
+                     try { sendErrorResponse(req, 400, "Invalid order ID format"); }
+                     catch (IOException ioEx) { System.err.println("IOException sending 400 error: " + ioEx.getMessage()); }
+                 } catch (JsonProcessingException | IllegalArgumentException e) {
+                    System.err.println("Invalid PUT /orders/{id} request body: " + e.getMessage());
+                    try { sendErrorResponse(req, 400, "Bad Request: " + e.getMessage()); }
+                    catch (IOException ioEx) { System.err.println("IOException sending 400 error: " + ioEx.getMessage()); }
+                 } catch (IOException e) { // Catch IO error from reading body stream
+                    System.err.println("IO Error reading PUT request body: " + e.getMessage());
+                    try { sendErrorResponse(req, 500, "Error reading request"); }
+                    catch (IOException ioEx) { System.err.println("IOException sending 500 error: " + ioEx.getMessage()); }
+                 }
+            } else {
+                 System.err.println("Unsupported PUT path: " + path);
+                 try { sendErrorResponse(req, 404, "Not Found"); }
+                 catch (IOException ioEx) { System.err.println("IOException sending 404 error: " + ioEx.getMessage()); }
+            }
+        }
+
+        // --- DELETE Request Handler ---
+        private void handleDelete(HttpExchange req, String path) {
+            String[] parts = path.split("/");
+             // Path: /orders/{orderId} (Cancel Order)
+            if (parts.length == 3 && "orders".equals(parts[1])) {
+                String orderIdStr = parts[2];
+                try {
+                    // Validate orderId format
+                    Integer.parseInt(orderIdStr);
+                    // No request body needed for DELETE
+
+                    System.out.println("Handler asking Gateway to delete/cancel order: " + orderIdStr);
+                    CompletionStage<DeleteOrder.DeleteOrderResponse> stage = AskPattern.ask(
+                            gateway,
+                            (ActorRef<DeleteOrder.DeleteOrderResponse> ref) -> new Gateway.DeleteOrderReq(orderIdStr, ref),
+                            askTimeout,
+                            scheduler);
+
+                    handleActorResponse(req, stage, (httpExchange, response) -> {
+                        try { // Handle IOException from send calls
+                            if (response.success) {
+                                sendJsonResponse(httpExchange, 200, response); // Send success response with message
+                            } else {
+                                System.err.println("Failed to cancel order " + orderIdStr + ": " + response.message);
+                                // 400 implies order not found or not cancellable
+                                sendJsonResponse(httpExchange, 400, response);
+                            }
+                        } catch (IOException e) {
+                            System.err.println("IOException sending DELETE /orders/{id} response: " + e.getMessage());
+                        }
+                    });
+                 } catch (NumberFormatException e) {
+                     System.err.println("Invalid order ID format: " + orderIdStr);
+                     try { sendErrorResponse(req, 400, "Invalid order ID format"); }
+                     catch (IOException ioEx) { System.err.println("IOException sending 400 error: " + ioEx.getMessage()); }
+                 }
+            } else {
+                System.err.println("Unsupported DELETE path: " + path);
+                try { sendErrorResponse(req, 404, "Not Found"); }
+                catch (IOException ioEx) { System.err.println("IOException sending 404 error: " + ioEx.getMessage()); }
+            }
+        }
+
+        // --- Helper to handle CompletionStage results ---
+        private <T> void handleActorResponse(HttpExchange req, CompletionStage<T> stage, java.util.function.BiConsumer<HttpExchange, T> onSuccess) {
+            stage.whenComplete((response, throwable) -> {
+                if (throwable != null) {
+                    Throwable cause = throwable.getCause() != null ? throwable.getCause() : throwable;
+                    try { // Try sending error response
+                        if (req.getResponseCode() == -1) { // Only send if no response sent yet
+                            if (cause instanceof TimeoutException) {
+                                System.err.println("Actor request timed out: " + cause.getMessage());
+                                sendErrorResponse(req, 504, "Gateway Timeout");
+                            } else {
+                                System.err.println("Actor request failed: " + cause.getMessage());
+                                cause.printStackTrace();
+                                sendErrorResponse(req, 500, "Internal Server Error");
+                            }
+                        } else {
+                            System.err.println("Ask failed but response already sent (" + req.getResponseCode() + "). Ask Error: " + cause.getMessage());
+                        }
+                    } catch (IOException e) {
+                         System.err.println("IOException sending error response after Ask failure: " + e.getMessage());
+                    }
+                } else {
+                    // Actor returned a response, process it using the provided success handler
+                    try {
+                        if (req.getResponseCode() == -1) { // Only process if no response sent yet
+                             onSuccess.accept(req, response); // Lambda MUST handle its own IOExceptions now
+                        } else {
+                             System.err.println("Ask succeeded but response already sent (" + req.getResponseCode() + "). Discarding actor response.");
+                        }
+                    } catch (Exception e) { // Catch ANY exception from the success handler logic
+                         System.err.println("Unexpected error processing successful actor response: " + e.getMessage());
+                         e.printStackTrace();
+                         if (req.getResponseCode() == -1) { // Attempt final error response
+                             try { sendErrorResponse(req, 500, "Internal Server Error processing response"); }
+                             catch (IOException ioex) { /* ignore secondary error */ }
+                         }
+                    }
+                }
+            });
+        }
+
+        // --- Helper to send JSON responses ---
+        private void sendJsonResponse(HttpExchange req, int statusCode, Object body) throws IOException {
+            if (req.getResponseCode() != -1) { // Check if response already started
+                 System.err.println("Attempted to send JSON response, but response already sent ("+statusCode+")");
+                 return;
+            }
+            byte[] jsonBytes = objectMapper.writeValueAsBytes(body);
+            req.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+            req.sendResponseHeaders(statusCode, jsonBytes.length);
+            try (OutputStream os = req.getResponseBody()) {
+                os.write(jsonBytes);
+            }
+             System.out.println("Sent response: " + statusCode + " " + new String(jsonBytes, StandardCharsets.UTF_8));
+        }
+
+        // --- Helper to send error responses (plain text) ---
+        private void sendErrorResponse(HttpExchange req, int statusCode, String message) throws IOException {
+             if (req.getResponseCode() != -1) { // Check if response already started
+                 System.err.println("Attempted to send error response, but response already sent ("+statusCode+")");
+                 return;
+            }
+            byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
+            req.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
+            long length = messageBytes.length > 0 ? messageBytes.length : -1; // Use -1 for no body
+            req.sendResponseHeaders(statusCode, length);
+            if (length > 0) {
+                try (OutputStream os = req.getResponseBody()) {
+                    os.write(messageBytes);
+                }
+            } else {
+                 req.getResponseBody().close(); // Close body if no content
+            }
+             System.out.println("Sent error response: " + statusCode + " " + message);
+        }
+    } // End of Handler class
 
 
+     // --- Rest of Main class (create, main methods) ---
+     // Ensure these are the same as the corrected versions from previous steps,
+     // including parsing the port, overriding config, spawning workers,
+     // partitioned product loading, and conditional HTTP server/Gateway startup.
+     // ... (create method) ...
+     // ... (main method) ...
 
-    //     	CompletionStage<Gateway.Response> compl = 
-    //     			AskPattern.ask(
-    //     				  gateway,
-    //     				  (ActorRef<Gateway.Response> ref) -> new Gateway.Command(ref), 
-    //     				  askTimeout,
-    //     				  scheduler);
-        	// The first param to ask() is the target actor to which we want to send the message
-        	/* The second param to ask() is a function that takes a "reply to" ActorRef as parameter (the parameter is named "ref" in this case), and constructs and returns the message to be sent to the target actor. The Akka framework will first implicitly create a "reply to" actor  for use only in this call to ask(); the programmer need not even declare a class for this actor. The framework will then call the provided function (i.e., the second param), and give the replyt-to ActorRef as argument to this function. 
-			
-			Normally, the function should embed the reply-to ActorRef in the message, and should also populate the message's other fields with whatever they need to contain. 
-			
-			Once the function returns the constructed message, the framework  sends this message to the target actor. When the target actor eventually sends a response  to the ActorRef inside the message (i.e., the reply-to actor),  that response will be received by the reply-to actor.   
-			  We should also explain what is meant by a CompletionStage<T> object. CompletionStage is a feature of plain Java, not akka. Please note that ask() is actually not a blocking call. It is non-blocking, like tell(). The difference is that tell() returns nothing, and does not expect that the target actor necessarily responds to the sending actor. Whereas, ask() expects that the target actor will respond to the reply-to actor embedded in the message sent to it. And the response message sent by the target actor (whenever it sends the message) will be received by the reply-to actor and  then placed into the CompletionStage returned by ask(). A CompletionStage in general is a placeholder for a value that is being computed by an asynchronous task, and that may not yet be ready to read. 
-			  */
-        	 // The third param to ask() is how long the CompletionStage should wait for its value to be obtained before declaring a timeout
-        	
-        	/* The following call to thenAccept() is blocking, and completes only when the CompletionStage receives its value (or times out). If it receives its value, the function provided below as argument to thenAccept gets executed, and the parameter r refers to the value of the CompletionStage (i.e., the message sent by the target actor to the reply-to actor in our setting). */
-            // compl.thenAccept((Gateway.Response r) -> {
-            // 							String response = r.resp;
-            // 					        try {
-			// 									req.sendResponseHeaders(200, response.length());
-			// 									OutputStream os = req.getResponseBody();
-			// 									os.write(response.getBytes());
-			// 									os.close();
-			// 								} catch (IOException e) {
-			// 										e.printStackTrace();
-			// 								}
-            // 			 			   }
-            // 				);
-            
-           /* Note, the entire code shown above in this method is a placeholder. Actually, Gateway.Command should be an interface, not a concrete class. This interface should have the necessary number of implementing classes, corresponding to the different types of requests that we can receive. The ask() should pass on the contents of the http request (including necessary fields in the request path and the request body) to the gateway actor, by constructing the message using the  implementing class of Gateway.Command that corresponds to the receipt request.  Also, the function passed to thenAccept must format the response received from the gateway actor into a valid http response as expected by the client. */
-    //     }
-    // }
-    
-    public static Behavior<Void> create() {
-        return Behaviors.setup(context -> {
-        	
-        	 gateway = context.asJava().spawn(Gateway.create(), "gateway"); // spawn gateway actor
-        	 
-        	 askTimeout = Duration.ofSeconds(5);
-        	 scheduler = context.getSystem().scheduler();
-			// code which starts the http server inside the root actor?
-        	 HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0); /* Creates a HTTP server that runs on localhost and listens to port 8080 */
-             server.createContext("/", new Handler()); /* The "handle" method class OrderHandler will receive each http request and respond to it */
-             server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool()); /* Create a thread pool and give it to the server. Server will submit each incoming request to the thread pool. Thread pool will pick a free thread (whenever it becomes available) and run the handle() method in this thread. The request is given as argument to the handle() method. */
-             server.start(); /* Start the server */
-             
-            // so fr product initialization should we spawn the product actor here?
-            // or should we spawn it in the gateway actor i think gateway?
-            return Behaviors.empty(); // keep me (i.e., the root actor) alive, but  I don't want to receive messages
+     public static Behavior<Void> create(int port) {
+         return Behaviors.setup(context -> {
+
+            ClusterSharding sharding = ClusterSharding.get(context.getSystem());
+            // Use a slightly longer timeout for clustered environment potentially
+            askTimeout = Duration.ofSeconds(100); // Increased timeout
+            scheduler = context.getSystem().scheduler();
+
+            // --- Worker Actor Spawning (All Nodes) ---
+            int numberOfWorkers = 50; // As per spec suggestion
+            context.getLog().info("Spawning {} PostOrder workers and registering with Receptionist", numberOfWorkers);
+            for (int i = 0; i < numberOfWorkers; i++) {
+                ActorRef<PostOrder.Command> worker = context.spawn(PostOrder.create(), "post-order-worker-" + i);
+                context.getSystem().receptionist().tell(Receptionist.register(POST_ORDER_SERVICE_KEY, worker));
+            }
+
+            context.getLog().info("Spawning {} DeleteOrder workers and registering with Receptionist", numberOfWorkers);
+            for (int i = 0; i < numberOfWorkers; i++) {
+                ActorRef<DeleteOrder.Command> worker = context.spawn(DeleteOrder.create(), "delete-order-worker-" + i);
+                context.getSystem().receptionist().tell(Receptionist.register(DELETE_ORDER_SERVICE_KEY, worker));
+            }
+
+            // --- Sharding Initialization (All Nodes) ---
+             context.getLog().info("Initializing Cluster Sharding for OrderActor and ProductActor");
+             sharding.init(
+                Entity.of(OrderActor.TypeKey,
+                (EntityContext<OrderActor.Command> entityContext) ->
+                        OrderActor.create(entityContext.getEntityId())
+            ));
+            sharding.init(
+                Entity.of(ProductActor.TypeKey,
+                (EntityContext<ProductActor.Command> entityContext) ->
+                        ProductActor.create(entityContext.getEntityId())
+            ));
+
+
+            // --- Partitioned Product Loading (All Nodes) ---
+            context.getLog().info("Loading and initializing product partitions...");
+            List<String[]> allProductDetails = LoadProduct.loadProducts("products.csv"); // Ensure CSV is in classpath
+            int nodeIndex = port - 8083; // 0 for 8083, 1 for 8084, etc.
+            int totalNodesForProducts = 2; // Distribute products across first two nodes as per spec
+            context.getLog().info("Node index {} (Port {}) initializing its product partition.", nodeIndex, port);
+
+            for (String[] productDetails : allProductDetails) {
+                // Add defensive trimming and checking
+                if (productDetails.length != 5) {
+                     context.getLog().warn("Skipping malformed product line in CSV: {}", String.join(",", productDetails));
+                     continue;
+                }
+                String productIdStr = productDetails[0].trim();
+                try {
+                    int productId = Integer.parseInt(productIdStr);
+                    // Initialize product only if it belongs to this node's partition (first 2 nodes)
+                    if (nodeIndex >= 0 && nodeIndex < totalNodesForProducts && (productId % totalNodesForProducts == nodeIndex)) {
+                        String productName = productDetails[1].trim();
+                        String productDescription = productDetails[2].trim();
+                        // Trim potential whitespace before parsing numbers
+                        int productPrice = Integer.parseInt(productDetails[3].trim());
+                        int productQuantity = Integer.parseInt(productDetails[4].trim());
+
+                        context.getLog().info("Node {} initializing Product {} - Name: {}, Price: {}, Qty: {}",
+                                 nodeIndex, productId, productName, productPrice, productQuantity);
+                        EntityRef<ProductActor.Command> productEntity =
+                            sharding.entityRefFor(ProductActor.TypeKey, productIdStr);
+                        // Use InitializeProduct message
+                        productEntity.tell(new ProductActor.InitializeProduct(productIdStr, productName, productDescription, productPrice, productQuantity));
+                    }
+                 } catch (NumberFormatException e) {
+                     // Log error if parsing fails
+                      context.getLog().error("Skipping product due to invalid number format: {} - Error: {}", String.join(",", productDetails), e.getMessage());
+                 }
+            }
+
+
+            // --- Conditional Startup Logic (Primary vs. Secondary) ---
+            if (port == 8083) { // Primary node specific startup
+                context.getLog().info("Primary node (port {}) starting HTTP server on port 8081 and Gateway actor.", port);
+                gateway = context.spawn(Gateway.create(), "gateway"); // Assign static gateway ref
+
+                HttpServer server = HttpServer.create(new InetSocketAddress(8081), 0); // Listen on 8081
+                server.createContext("/", new Handler()); // Use the static Handler class instance
+                server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+                server.start();
+                context.getLog().info("HTTP Server started on port 8081.");
+
+            } else { // Secondary node specific logic (if any)
+                context.getLog().info("Secondary node (port {}) joining cluster. Not starting HTTP server or Gateway.", port);
+                // Secondary nodes simply join the cluster and run workers/shards
+            }
+
+            return Behaviors.empty(); // Keep root actor alive
         });
-    }
+     }
 
-    public static void main(String[] args) {
-        Config config = ConfigFactory.load();
+     public static void main(String[] args) {
+        if (args.length != 1) {
+            System.err.println("Usage: Main <port>");
+            System.exit(1);
+        }
 
-        // Get the port from the config
-        int port = config.getInt("akka.remote.artery.canonical.port");
+        final int port; // Declare final
+        try {
+            port = Integer.parseInt(args[0]); // Assign
+        } catch (NumberFormatException e) {
+            System.err.println("Invalid port number: " + args[0]);
+            System.exit(1);
+            return; // Needed because 'port' might not be initialized
+        }
+         if (port <= 0) { // Port must be positive
+            System.err.println("Port must be a positive integer.");
+            System.exit(1);
+         }
 
-        System.out.println("Loaded Configurations:");
-        System.out.println("Port: " + port);
+        Config baseConfig = ConfigFactory.load(); // Loads application.conf
+        Config configWithPort = ConfigFactory.parseMap(Collections.singletonMap(
+                "akka.remote.artery.canonical.port", Integer.toString(port)
+            )).withFallback(baseConfig);
 
- 
-        //The actor system name should be the same for the Cluster
-        final ActorSystem<Void> system = ActorSystem.create(Main.create(), "ClusterSystem", config);
+        System.out.println("Starting Akka node on port: " + port);
+        if(port == 8083) System.out.println("This is the primary node (seed node).");
 
+        final ActorSystem<Void> system = ActorSystem.create(Main.create(port), "ClusterSystem", configWithPort);
 
-
-        // Add a shutdown hook to stop the ActorSystem gracefully
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("Stopping actor system");
+            System.out.println("Stopping actor system on port " + port); // Use final port
             system.terminate();
         }));
-    }
-    
-    // Normally nothing should be done in main() after creating the ActorSytem.
-    // We are breaking this rule only for demo purposes.
-        // A question to think about: Why can't we start the http server here? Why does it need to be started within the root actor?
+    } // End of main
 
-		// actor system stops or crashes, the HTTP server would still be running, potentially leading to inconsistencies
-    
-}
+
+} // End of Main class
