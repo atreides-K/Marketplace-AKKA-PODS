@@ -3,6 +3,7 @@ package pods.akka;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.ActorSystem;
 import akka.actor.typed.Behavior;
+import akka.actor.typed.DispatcherSelector;
 import akka.actor.typed.Scheduler;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.AskPattern;
@@ -16,6 +17,9 @@ import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.Entity;
 import akka.cluster.sharding.typed.javadsl.EntityContext;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
+import scala.concurrent.ExecutionContext; // Still need this import
+import java.util.concurrent.Executor;    // Import Java Executor
+import akka.dispatch.ExecutionContexts; 
 import org.slf4j.Logger; // Using SLF4J
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -54,7 +58,7 @@ public class Main {
     private static final int PRIMARY_NODE_AKKA_PORT = 8083;
     private static final int WORKER_POOL_SIZE = 50;
     private static final String PRODUCT_CSV_FILE = "products.csv";
-    private static final Duration INIT_DELAY = Duration.ofSeconds(5);
+    private static final Duration INIT_DELAY = Duration.ofSeconds(25);
     private static final int TOTAL_PARTITIONS = 10; // Needs careful tuning maybe
     private static final int EXPECTED_NODE_COUNT = 3; // Needs to match actual deployment count ideally
 
@@ -198,7 +202,7 @@ public class Main {
         Duration askTimeout = Duration.ofSeconds(5);
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 0);
-            server.createContext("/", new MarketplaceHttpHandler(gateway, scheduler, askTimeout, log));
+            server.createContext("/", new MarketplaceHttpHandler(gateway, scheduler, askTimeout, log, originalContext));
             server.setExecutor(Executors.newCachedThreadPool());
             server.start();
             log.info("HTTP server started on port {}", httpPort);
@@ -249,12 +253,14 @@ class MarketplaceHttpHandler implements HttpHandler {
     private final Duration askTimeout;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Logger log; // Use SLF4J Logger
+    private final Executor executor; 
 
-    public MarketplaceHttpHandler(ActorRef<Gateway.Command> gateway, Scheduler scheduler, Duration askTimeout, Logger log) {
+    public MarketplaceHttpHandler(ActorRef<Gateway.Command> gateway, Scheduler scheduler, Duration askTimeout, Logger log, ActorContext<?> context) {
         this.gateway = gateway;
         this.scheduler = scheduler;
         this.askTimeout = askTimeout;
         this.log = log;
+        this.executor = context.getSystem().dispatchers().lookup(DispatcherSelector.defaultDispatcher()); 
     }
 
     @Override
@@ -328,7 +334,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                          try { req.getResponseBody().close(); } catch (Exception ignored) {}
                     }
                     // REMOVED finally block here
-                }, Executors.newSingleThreadExecutor()); // Consider using Akka dispatcher later
+                }, this.executor); // Consider using Akka dispatcher later
     }
 
     private void handleGetOrder(HttpExchange req, String orderId) {
@@ -357,7 +363,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                  try { req.getResponseBody().close(); } catch (Exception ignored) {}
             }
              // Removed finally block
-        }, Executors.newSingleThreadExecutor());
+        }, this.executor);
      }
 
      private void handlePost(HttpExchange req, String path) throws IOException {
@@ -397,7 +403,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
                   // Removed finally block
-             }, Executors.newSingleThreadExecutor());
+             }, this.executor);
          } else { sendResponse(req, 404, "Not Found", null); }
      }
 
@@ -441,7 +447,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
                   // Removed finally block
-             }, Executors.newSingleThreadExecutor());
+             }, this.executor);
         } else { sendResponse(req, 400, "Bad Request: Invalid path for PUT", null); }
     }
 
@@ -474,7 +480,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
                   // Removed finally block
-             }, Executors.newSingleThreadExecutor());
+             }, this.executor);
         } else { sendResponse(req, 400, "Bad Request: Invalid path for DELETE", null); }
     }
 
