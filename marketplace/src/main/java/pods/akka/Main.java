@@ -480,9 +480,9 @@ public class Main {
             // --- Partitioned Product Loading (All Nodes) ---
             context.getLog().info("Loading and initializing product partitions...");
             List<String[]> allProductDetails = LoadProduct.loadProducts("products.csv"); // Ensure CSV is in classpath
-            int nodeIndex = port - 8083; // 0 for 8083, 1 for 8084, etc.
-            int totalNodesForProducts = 2; // Distribute products across first two nodes as per spec
-            context.getLog().info("Node index {} (Port {}) initializing its product partition.", nodeIndex, port);
+            // int nodeIndex = port - 8083; // 0 for 8083, 1 for 8084, etc.
+            // int totalNodesForProducts = 2; // Distribute products across first two nodes as per spec
+            // context.getLog().info("Node index {} (Port {}) initializing its product partition.", nodeIndex, port);
 
             for (String[] productDetails : allProductDetails) {
                 // Add defensive trimming and checking
@@ -492,22 +492,18 @@ public class Main {
                 }
                 String productIdStr = productDetails[0].trim();
                 try {
-                    int productId = Integer.parseInt(productIdStr);
-                    // Initialize product only if it belongs to this node's partition (first 2 nodes)
-                    if (nodeIndex >= 0 && nodeIndex < totalNodesForProducts && (productId % totalNodesForProducts == nodeIndex)) {
                         String productName = productDetails[1].trim();
                         String productDescription = productDetails[2].trim();
                         // Trim potential whitespace before parsing numbers
                         int productPrice = Integer.parseInt(productDetails[3].trim());
                         int productQuantity = Integer.parseInt(productDetails[4].trim());
 
-                        context.getLog().info("Node {} initializing Product {} - Name: {}, Price: {}, Qty: {}",
-                                 nodeIndex, productId, productName, productPrice, productQuantity);
+                        context.getLog().debug("Node {} sending InitializeProduct for Product {}", port, productIdStr);
                         EntityRef<ProductActor.Command> productEntity =
                             sharding.entityRefFor(ProductActor.TypeKey, productIdStr);
                         // Use InitializeProduct message
                         productEntity.tell(new ProductActor.InitializeProduct(productIdStr, productName, productDescription, productPrice, productQuantity));
-                    }
+                    
                  } catch (NumberFormatException e) {
                      // Log error if parsing fails
                       context.getLog().error("Skipping product due to invalid number format: {} - Error: {}", String.join(",", productDetails), e.getMessage());
