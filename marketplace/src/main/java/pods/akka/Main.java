@@ -40,6 +40,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration; // Import Duration
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -60,7 +61,7 @@ public class Main {
     private static final String PRODUCT_CSV_FILE = "products.csv";
     private static final Duration INIT_DELAY = Duration.ofSeconds(25);
     private static final int TOTAL_PARTITIONS = 10; // Needs careful tuning maybe
-    private static final int EXPECTED_NODE_COUNT = 3; // Needs to match actual deployment count ideally
+    private static final int EXPECTED_NODE_COUNT = 2; // Needs to match actual deployment count ideally
 
     public static Behavior<RootCommand> createRootBehaviorTyped(int akkaPort) {
         return Behaviors.setup(context -> {
@@ -74,10 +75,12 @@ public class Main {
             boolean isPrimaryNode = (akkaPort == PRIMARY_NODE_AKKA_PORT);
             log.info("Is Primary Node (port {} == {}): {}", akkaPort, PRIMARY_NODE_AKKA_PORT, isPrimaryNode);
 
-            // Initialize Cluster Sharding (All Nodes)
-            // CORRECTED: Added .withRole back to match application.conf
+            // Initialize Cluster Sharding (All Nodes with orders but limit product actors to two nodes ig)
+
+         
+
             sharding.init( Entity.of(OrderActor.TypeKey, (EntityContext<OrderActor.Command> ec) -> OrderActor.create(ec.getEntityId())).withRole("marketplace"));
-            sharding.init( Entity.of(ProductActor.TypeKey, (EntityContext<ProductActor.Command> ec) -> ProductActor.create(ec.getEntityId())).withRole("marketplace"));
+            sharding.init( Entity.of(ProductActor.TypeKey, (EntityContext<ProductActor.Command> ec) -> ProductActor.create(ec.getEntityId())).withRole("product-host"));
             log.info("Cluster Sharding initialized for OrderActor and ProductActor with role 'marketplace'.");
 
             // Spawn Worker Actors and Register (All Nodes)
@@ -203,7 +206,9 @@ public class Main {
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 0);
             server.createContext("/", new MarketplaceHttpHandler(gateway, scheduler, askTimeout, log, originalContext));
-            server.setExecutor(Executors.newCachedThreadPool());
+            int httpThreadPoolSize = 100; 
+            log.info("Setting HttpServer executor to fixed thread pool with size: {}", httpThreadPoolSize);
+            server.setExecutor(Executors.newFixedThreadPool(httpThreadPoolSize));
             server.start();
             log.info("HTTP server started on port {}", httpPort);
         } catch (IOException e) {
@@ -221,6 +226,7 @@ public class Main {
         }
         int akkaPort;
         try {
+            // am i able to send port val???
             akkaPort = Integer.parseInt(portString);
         } catch (NumberFormatException e) {
             System.err.println("Invalid Akka port provided: " + portString);
@@ -228,11 +234,27 @@ public class Main {
             return;
         }
         Config baseConfig = ConfigFactory.load();
+        List<String> roles = new ArrayList<>();
+        roles.add("marketplace");
+        // hardcoded first two nodes fr prod actors
+        final int prodNode1 = 8083; 
+        final int prodNode2 = 8084; 
+        final String prodHost = "product-host"; 
+        if (akkaPort == prodNode1 || akkaPort == prodNode2) {
+            roles.add(prodHost);
+            System.out.println("Node"+akkaPort+": Assigning roles: "+roles);
+        } else {
+            System.out.println("Node"+akkaPort+": Assigning roles: "+roles+"(Worker only)");
+        }
+
         Map<String, Object> overrides = new HashMap<>();
         overrides.put("akka.remote.artery.canonical.port", akkaPort);
+        overrides.put("akka.cluster.roles", roles);
+        
         Config finalConfig = ConfigFactory.parseMap(overrides).withFallback(baseConfig);
-
-        System.out.println("Starting Akka node on port: " + akkaPort);
+        
+        
+        System.out.println("Starting Akka node on port: " + akkaPort + " with effective roles: " + finalConfig.getStringList("akka.cluster.roles"));
 
         final ActorSystem<RootCommand> system = ActorSystem.create(createRootBehaviorTyped(akkaPort), "ClusterSystem", finalConfig);
 
@@ -253,14 +275,18 @@ class MarketplaceHttpHandler implements HttpHandler {
     private final Duration askTimeout;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Logger log; // Use SLF4J Logger
-    private final Executor executor; 
+    // private final Executor executor; 
+    private final Executor blockingIoExecutor;
 
     public MarketplaceHttpHandler(ActorRef<Gateway.Command> gateway, Scheduler scheduler, Duration askTimeout, Logger log, ActorContext<?> context) {
         this.gateway = gateway;
         this.scheduler = scheduler;
         this.askTimeout = askTimeout;
         this.log = log;
-        this.executor = context.getSystem().dispatchers().lookup(DispatcherSelector.defaultDispatcher()); 
+        // this.executor = context.getSystem().dispatchers().lookup(DispatcherSelector.defaultDispatcher()); 
+        this.blockingIoExecutor = context.getSystem().dispatchers().lookup(
+            DispatcherSelector.fromConfig("blocking-io-dispatcher"));
+
     }
 
     @Override
@@ -334,7 +360,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                          try { req.getResponseBody().close(); } catch (Exception ignored) {}
                     }
                     // REMOVED finally block here
-                }, this.executor); // Consider using Akka dispatcher later
+                }, this.blockingIoExecutor); // Consider using Akka dispatcher later
     }
 
     private void handleGetOrder(HttpExchange req, String orderId) {
@@ -363,7 +389,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                  try { req.getResponseBody().close(); } catch (Exception ignored) {}
             }
              // Removed finally block
-        }, this.executor);
+        }, this.blockingIoExecutor);
      }
 
      private void handlePost(HttpExchange req, String path) throws IOException {
@@ -403,7 +429,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
                   // Removed finally block
-             }, this.executor);
+             }, this.blockingIoExecutor);
          } else { sendResponse(req, 404, "Not Found", null); }
      }
 
@@ -447,7 +473,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
                   // Removed finally block
-             }, this.executor);
+             }, this.blockingIoExecutor);
         } else { sendResponse(req, 400, "Bad Request: Invalid path for PUT", null); }
     }
 
@@ -480,7 +506,7 @@ class MarketplaceHttpHandler implements HttpHandler {
                       try { req.getResponseBody().close(); } catch (Exception ignored) {}
                  }
                   // Removed finally block
-             }, this.executor);
+             }, this.blockingIoExecutor);
         } else { sendResponse(req, 400, "Bad Request: Invalid path for DELETE", null); }
     }
 

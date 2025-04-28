@@ -91,11 +91,11 @@ def concurrent_order_cancellation_test():
            - The product stock is restored to its initial value.
            - The wallet balance is as expected (refund equals the cost of canceled orders).
     """
-    user_id = 6001
-    name = "Concurrent Canceler"
-    email = "canceler@example.com"
-    product_id = 119   # Ensure this product exists in products.csv
-    initial_wallet = 50000  # Ample funds for ordering
+    user_id = 71
+    name = "Connt Canler"
+    email = "clner@exame.om"
+    product_id = 113   # Ensure this product exists in products.csv
+    initial_wallet = 500000  # Ample funds for ordering
     order_unit = 1         # each order places 1 unit
 
     # Step 1: Create user and credit wallet

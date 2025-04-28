@@ -2,6 +2,7 @@ package pods.akka.actors;
 
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
+import akka.actor.typed.DispatcherSelector;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Receive;
@@ -20,6 +21,7 @@ import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List; // Import List
+import java.util.concurrent.Executor;
 
 // Import SLF4J Logger
 import org.slf4j.Logger;
@@ -32,7 +34,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
 
     // --- Command Protocol ---
     public interface Command extends CborSerializable {}
-
+    
     // Initial command to start order deletion.
     public static final class StartDelete implements Command {
         public final String orderId; // Use String to match OrderActor entityId
@@ -116,7 +118,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     private final HttpClient httpClient;
     private final ClusterSharding sharding;
     private final ActorContext<Command> context; // Store context
-
+    private final Executor ioExecutor; //make it blazing fast pls
 
     // --- Constructor and Factory ---
     public static Behavior<Command> create() {
@@ -126,6 +128,8 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
     private DeleteOrder(ActorContext<Command> context) {
         super(context);
         this.context = context;
+        this.ioExecutor = context.getSystem().dispatchers().lookup(
+            DispatcherSelector.fromConfig("blocking-io-dispatcher"));
         this.httpClient = HttpClient.newBuilder()
                                    .connectTimeout(Duration.ofSeconds(5))
                                    .build();
@@ -351,7 +355,7 @@ public class DeleteOrder extends AbstractBehavior<DeleteOrder.Command> {
                         // Send internal success message
                         context.getSelf().tell(new WalletCreditResult(true, "Wallet credited successfully"));
                     }
-                }, context.getExecutionContext()); // Use Akka dispatcher
+                }, this.ioExecutor); // Use Akka dispatcher
         }
 
         // Actor stays in the main behavior, waiting for WalletCreditResult
